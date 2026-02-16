@@ -1,0 +1,10 @@
+{
+  "name": "{{NAME}}",
+  "build": { "dockerfile": "Dockerfile" },
+  "runArgs": ["--memory=4g", "--cpus=2"],
+  "remoteUser": "dev",
+  "mounts": [
+    "source=/.claude,target=/home/dev/.claude,type=bind,readonly"
+  ],
+  "postCreateCommand": "npm install"
+}

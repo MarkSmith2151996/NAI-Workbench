@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== Security Gate ==="
+
+CHANGED_FILES=
+
+# Skip for docs-only commits
+if echo "" | grep -qvE "\.(md|txt|json)$"; then
+
+  echo "[1/3] Checking for secrets..."
+  gitleaks protect --staged --no-banner || {
+    echo "BLOCKED: Secrets detected in staged files"
+    exit 1
+  }
+
+  echo "[2/3] Running static analysis..."
+  semgrep scan --config auto --error --quiet  2>/dev/null || {
+    echo "BLOCKED: Security issues found by Semgrep"
+    exit 1
+  }
+
+  if echo "" | grep -qE "(package-lock|requirements|Cargo\.lock|go\.sum)"; then
+    echo "[3/3] Scanning dependencies..."
+    trivy fs --severity HIGH,CRITICAL --exit-code 1 --quiet . || {
+      echo "BLOCKED: Vulnerable dependencies found"
+      exit 1
+    }
+  else
+    echo "[3/3] No dependency changes, skipping"
+  fi
+else
+  echo "Docs-only commit, skipping security scan"
+fi
+
+echo "=== All gates passed ==="

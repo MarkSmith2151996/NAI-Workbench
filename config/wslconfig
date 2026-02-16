@@ -1,0 +1,8 @@
+[wsl2]
+memory=16GB
+processors=4
+swap=4GB
+
+[experimental]
+autoMemoryReclaim=gradual
+sparseVhd=true
