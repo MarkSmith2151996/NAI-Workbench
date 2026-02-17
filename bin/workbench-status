@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Show full NAI Workbench status: services, sessions, projects
+set -euo pipefail
+
+echo "╔══════════════════════════════════════╗"
+echo "║       NAI WORKBENCH STATUS           ║"
+echo "╚══════════════════════════════════════╝"
+echo ""
+
+echo "=== Services ==="
+printf "  %-20s " "code-server (9091):"
+if curl -s -o /dev/null -w '' http://localhost:9091 2>/dev/null; then
+  echo "✓ Running"
+else
+  echo "✗ Down"
+fi
+
+printf "  %-20s " "Komodo (9090):"
+if curl -s -o /dev/null -w '' http://localhost:9090 2>/dev/null; then
+  echo "✓ Running"
+else
+  echo "✗ Down"
+fi
+
+echo ""
+echo "=== Docker Containers ==="
+docker ps --format '  {{.Names}}: {{.Status}}' 2>/dev/null || echo "  Docker not running"
+
+echo ""
+echo "=== Tmux Sessions ==="
+tmux list-sessions 2>/dev/null || echo "  No active sessions"
+
+echo ""
+echo "=== Projects ==="
+for dir in ~/projects/*/; do
+  name=$(basename "$dir")
+  branch=""
+  if [ -d "$dir/.git" ]; then
+    branch=$(git -C "$dir" branch --show-current 2>/dev/null || echo "?")
+    status=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l)
+    echo "  $name (branch: $branch, $status uncommitted changes)"
+  else
+    echo "  $name (no git)"
+  fi
+done
+
+echo ""
+echo "=== System ==="
+echo "  CPU: $(nproc) cores"
+echo "  RAM: $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+echo "  Disk: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 " used)"}')"

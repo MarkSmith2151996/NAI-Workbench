@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Kill a tmux session by name
+set -euo pipefail
+
+SESSION="${1:-}"
+
+if [ -z "$SESSION" ]; then
+  echo "Usage: kill-session <session-name>"
+  echo ""
+  echo "Active sessions:"
+  tmux list-sessions 2>/dev/null || echo "  (none)"
+  exit 1
+fi
+
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "Session '$SESSION' does not exist."
+  tmux list-sessions 2>/dev/null || echo "No active sessions."
+  exit 1
+fi
+
+tmux kill-session -t "$SESSION"
+echo "Killed session '$SESSION'"
+echo ""
+echo "Remaining sessions:"
+tmux list-sessions 2>/dev/null || echo "  (none)"

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# List all active tmux sessions with details
+set -euo pipefail
+
+if ! command -v tmux &>/dev/null; then
+  echo "ERROR: tmux is not installed"
+  exit 1
+fi
+
+if ! tmux list-sessions 2>/dev/null; then
+  echo "No active tmux sessions."
+  exit 0
+fi
+
+echo ""
+echo "--- Session Details ---"
+for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do
+  windows=$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | tr '\n' ', ')
+  echo "  $session: windows=[$windows]"
+done

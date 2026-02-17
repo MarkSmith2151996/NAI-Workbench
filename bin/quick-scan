@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Quick security scan: gitleaks + trivy on a project
+set -euo pipefail
+
+PROJECT_DIR="${1:-.}"
+
+echo "=== QUICK SCAN: $PROJECT_DIR ==="
+
+echo "[1/2] Checking for secrets (gitleaks)..."
+if gitleaks detect --source "$PROJECT_DIR" --no-banner 2>&1; then
+  echo "  ✓ No secrets found"
+else
+  echo "  ✗ Secrets detected!"
+fi
+
+echo ""
+echo "[2/2] Checking dependencies (trivy)..."
+if trivy fs --severity HIGH,CRITICAL --exit-code 1 --quiet "$PROJECT_DIR" 2>&1; then
+  echo "  ✓ No high/critical vulnerabilities"
+else
+  echo "  ✗ Vulnerabilities found!"
+fi
+
+echo ""
+echo "=== QUICK SCAN COMPLETE ==="

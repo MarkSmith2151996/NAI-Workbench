@@ -1,0 +1,13 @@
+[Unit]
+Description=Claude Code Web UI
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/claude-code-webui --host 0.0.0.0 --port 9082
+Restart=always
+RestartSec=5
+WorkingDirectory=/home/dev/projects
+Environment=HOME=/home/dev
+
+[Install]
+WantedBy=default.target

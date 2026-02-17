@@ -1,33 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="."
-APP_URL=""
+PROJECT_DIR="${1:-.}"
+APP_URL="${2:-}"
 
-echo "=== SECURITY GATE:  ==="
+echo "=== SECURITY GATE: $PROJECT_DIR ==="
 
 echo "[Gate 1/5] Secret detection..."
-gitleaks detect --source "" --no-banner
+gitleaks detect --source "$PROJECT_DIR" --no-banner
 
 echo "[Gate 2/5] Static analysis..."
-semgrep scan --config auto --error ""
+semgrep scan --config auto --error "$PROJECT_DIR"
 
 echo "[Gate 3/5] Dependency vulnerabilities..."
-trivy fs --severity HIGH,CRITICAL --exit-code 1 ""
+trivy fs --severity HIGH,CRITICAL --exit-code 1 "$PROJECT_DIR"
 
-if [ -n "" ]; then
+if [ -n "$APP_URL" ]; then
   echo "[Gate 4/5] Dynamic security testing..."
-  docker run --rm -t ghcr.io/zaproxy/zaproxy:stable     zap-baseline.py -t ""
+  docker run --rm -t ghcr.io/zaproxy/zaproxy:stable \
+    zap-baseline.py -t "$APP_URL"
 else
   echo "[Gate 4/5] No app URL, skipping DAST"
 fi
 
-if [ -n "" ]; then
+if [ -n "$APP_URL" ]; then
   echo "[Gate 5/5] Stress test..."
   k6 run --vus 50 --duration 30s - <<SCRIPT
   import http from "k6/http";
   export default function () {
-    http.get("");
+    http.get("$APP_URL");
   }
 SCRIPT
 else

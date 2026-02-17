@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NAI Workbench</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 300;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.5rem;
+      color: #fff;
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: #666;
+      margin-bottom: 2.5rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+      width: 100%;
+      max-width: 900px;
+    }
+
+    .card {
+      background: #141414;
+      border: 1px solid #222;
+      border-radius: 12px;
+      padding: 1.5rem;
+      text-decoration: none;
+      color: inherit;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .card:hover {
+      border-color: #444;
+      background: #1a1a1a;
+      transform: translateY(-2px);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .card-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      flex-shrink: 0;
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .card-desc {
+      font-size: 0.85rem;
+      color: #888;
+      line-height: 1.5;
+    }
+
+    .card-port {
+      font-size: 0.75rem;
+      color: #555;
+      font-family: monospace;
+    }
+
+    /* Card accent colors */
+    .whiteboard .card-icon { background: #1a1a2e; color: #6c63ff; }
+    .whiteboard:hover { border-color: #6c63ff40; }
+
+    .chat .card-icon { background: #1a2e1a; color: #4ade80; }
+    .chat:hover { border-color: #4ade8040; }
+
+    .code .card-icon { background: #2e1a1a; color: #f87171; }
+    .code:hover { border-color: #f8717140; }
+
+    .dashboard .card-icon { background: #2e2a1a; color: #fbbf24; }
+    .dashboard:hover { border-color: #fbbf2440; }
+
+    .status {
+      margin-top: 2rem;
+      font-size: 0.75rem;
+      color: #444;
+    }
+
+    @media (max-width: 600px) {
+      body { padding: 1.5rem 0.75rem; }
+      h1 { font-size: 1.5rem; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <h1>NAI WORKBENCH</h1>
+  <p class="subtitle">Planning Studio &amp; Dev Environment</p>
+
+  <div class="grid">
+    <a href="//:9081" class="card whiteboard" id="whiteboard">
+      <div class="card-header">
+        <div class="card-icon">&#9998;</div>
+        <div class="card-title">Whiteboard</div>
+      </div>
+      <div class="card-desc">Excalidraw canvas for diagrams, wireframes, flowcharts, and visual brainstorming.</div>
+      <div class="card-port">localhost:9081</div>
+    </a>
+
+    <a href="//:9082" class="card chat" id="chat">
+      <div class="card-header">
+        <div class="card-icon">&#9993;</div>
+        <div class="card-title">AI Chat</div>
+      </div>
+      <div class="card-desc">Claude Code in a browser. Brainstorm, plan, and build with AI assistance.</div>
+      <div class="card-port">localhost:9082</div>
+    </a>
+
+    <a href="//:9091" class="card code" id="code">
+      <div class="card-header">
+        <div class="card-icon">&#60;/&#62;</div>
+        <div class="card-title">Code Editor</div>
+      </div>
+      <div class="card-desc">VS Code in the browser. Edit code, run terminals, manage projects.</div>
+      <div class="card-port">localhost:9091</div>
+    </a>
+
+    <a href="//:9090" class="card dashboard" id="dashboard">
+      <div class="card-header">
+        <div class="card-icon">&#9881;</div>
+        <div class="card-title">Dashboard</div>
+      </div>
+      <div class="card-desc">Komodo system dashboard. Docker containers, system health, scripts.</div>
+      <div class="card-port">localhost:9090</div>
+    </a>
+  </div>
+
+  <p class="status" id="status"></p>
+
+  <script>
+    // Fix links to use current hostname (works for localhost AND remote access)
+    const host = window.location.hostname;
+    document.querySelectorAll('.card').forEach(card => {
+      const port = card.querySelector('.card-port').textContent.split(':')[1];
+      card.href = `http://${host}:${port}`;
+    });
+
+    // Quick health check
+    async function checkStatus() {
+      const services = [
+        { name: 'Whiteboard', port: 9081 },
+        { name: 'AI Chat', port: 9082 },
+        { name: 'Code', port: 9091 },
+        { name: 'Dashboard', port: 9090 },
+      ];
+      const results = [];
+      for (const s of services) {
+        try {
+          const r = await fetch(`http://${host}:${s.port}`, { mode: 'no-cors', signal: AbortSignal.timeout(3000) });
+          results.push(`${s.name}: up`);
+        } catch {
+          results.push(`${s.name}: down`);
+        }
+      }
+      document.getElementById('status').textContent = results.join(' | ');
+    }
+    checkStatus();
+  </script>
+</body>
+</html>

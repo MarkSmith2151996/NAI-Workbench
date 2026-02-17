@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Print the code-server URL for a project
+set -euo pipefail
+
+PROJECT="${1:-}"
+
+if [ -z "$PROJECT" ]; then
+  echo "Usage: open-project <project-name>"
+  echo ""
+  echo "Available projects:"
+  ls ~/projects/ 2>/dev/null || echo "  (none)"
+  exit 1
+fi
+
+PROJECT_DIR="/home/dev/projects/$PROJECT"
+
+if [ ! -d "$PROJECT_DIR" ]; then
+  echo "ERROR: Project directory not found: $PROJECT_DIR"
+  echo ""
+  echo "Available projects:"
+  ls ~/projects/
+  exit 1
+fi
+
+URL="http://localhost:9091/?folder=$PROJECT_DIR"
+echo "Open code-server for '$PROJECT':"
+echo "  $URL"
+echo ""
+echo "Project contents:"
+ls "$PROJECT_DIR"

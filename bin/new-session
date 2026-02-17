@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Create a new tmux session for a project, optionally launching Claude Code
+set -euo pipefail
+
+PROJECT="${1:-}"
+LAUNCH_CLAUDE="${2:-false}"
+
+if [ -z "$PROJECT" ]; then
+  echo "Usage: new-session <project-name> [launch-claude]"
+  echo ""
+  echo "Available projects:"
+  ls ~/projects/ 2>/dev/null || echo "  (none found in ~/projects/)"
+  exit 1
+fi
+
+PROJECT_DIR="$HOME/projects/$PROJECT"
+
+if [ ! -d "$PROJECT_DIR" ]; then
+  echo "ERROR: Project directory not found: $PROJECT_DIR"
+  echo ""
+  echo "Available projects:"
+  ls ~/projects/
+  exit 1
+fi
+
+# Check if session already exists
+if tmux has-session -t "$PROJECT" 2>/dev/null; then
+  echo "Session '$PROJECT' already exists."
+  tmux list-windows -t "$PROJECT"
+  exit 0
+fi
+
+# Create new detached session in the project directory
+if [ "$LAUNCH_CLAUDE" = "true" ] || [ "$LAUNCH_CLAUDE" = "claude" ]; then
+  tmux new-session -d -s "$PROJECT" -c "$PROJECT_DIR" "claude"
+  echo "Created session '$PROJECT' with Claude Code in $PROJECT_DIR"
+else
+  tmux new-session -d -s "$PROJECT" -c "$PROJECT_DIR"
+  echo "Created session '$PROJECT' in $PROJECT_DIR"
+fi
+
+tmux list-sessions
