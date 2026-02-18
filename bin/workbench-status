@@ -8,8 +8,8 @@ echo "╚═══════════════════════�
 echo ""
 
 echo "=== Services ==="
-printf "  %-20s " "code-server (9091):"
-if curl -s -o /dev/null -w '' http://localhost:9091 2>/dev/null; then
+printf "  %-20s " "Excalidraw (9081):"
+if curl -s -o /dev/null -w '' http://localhost:9081 2>/dev/null; then
   echo "✓ Running"
 else
   echo "✗ Down"
@@ -17,6 +17,13 @@ fi
 
 printf "  %-20s " "Komodo (9090):"
 if curl -s -o /dev/null -w '' http://localhost:9090 2>/dev/null; then
+  echo "✓ Running"
+else
+  echo "✗ Down"
+fi
+
+printf "  %-20s " "code-server (9091):"
+if curl -s -o /dev/null -w '' http://localhost:9091 2>/dev/null; then
   echo "✓ Running"
 else
   echo "✗ Down"

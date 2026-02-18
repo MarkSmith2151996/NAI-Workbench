@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# NAI Planning Studio health check
+# NAI Workbench service health check
 set -uo pipefail
 
-echo "=== NAI PLANNING STUDIO ==="
+echo "=== NAI WORKBENCH STATUS ==="
 echo ""
 
 PASS=0
@@ -22,19 +22,13 @@ check() {
   fi
 }
 
-check "Portal" 9080
 check "Excalidraw (Whiteboard)" 9081
-check "Claude Chat (AI)" 9082
 check "Komodo (Dashboard)" 9090
 check "code-server (Editor)" 9091
 
 echo ""
 echo "  Docker containers:"
 docker ps --format '    {{.Names}}: {{.Status}}' 2>/dev/null || echo "    Docker not running"
-
-echo ""
-echo "  claude-webui service:"
-systemctl --user is-active claude-webui 2>/dev/null && echo "    active" || echo "    inactive"
 
 echo ""
 echo "  Results: $PASS up, $FAIL down"

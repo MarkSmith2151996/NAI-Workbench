@@ -1,0 +1,102 @@
+{
+  "wsl-terminal": {
+    "icon": "brands@linux",
+    "label": "WSL",
+    "color": "#4ade80",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "shell",
+        "connection": "ssh://dev@TAILSCALE_IP:2222"
+      }
+    }
+  },
+  "dashboard": {
+    "icon": "gauge-high",
+    "label": "Dashboard",
+    "color": "#ff9800",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "ssh://dev@TAILSCALE_IP:2222",
+        "cmd": "/home/dev/projects/nai-workbench/bin/launch-dashboard"
+      }
+    }
+  },
+  "claude-cli": {
+    "icon": "robot",
+    "label": "Claude",
+    "color": "#d97706",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "ssh://dev@TAILSCALE_IP:2222",
+        "cmd": "/home/dev/projects/nai-workbench/bin/claude-session"
+      }
+    }
+  },
+  "test-project": {
+    "icon": "flask-vial",
+    "label": "Test",
+    "color": "#22d3ee",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "ssh://dev@TAILSCALE_IP:2222",
+        "cmd": "/home/dev/projects/nai-workbench/bin/test-project"
+      }
+    }
+  },
+  "penpot": {
+    "icon": "pen-nib",
+    "label": "Whiteboard",
+    "color": "#6c63ff",
+    "blockdef": {
+      "meta": {
+        "view": "web",
+        "url": "http://TAILSCALE_IP:9001",
+        "pinnedurl": "http://TAILSCALE_IP:9001"
+      }
+    }
+  },
+  "komodo": {
+    "icon": "gauge",
+    "label": "Komodo",
+    "color": "#fbbf24",
+    "blockdef": {
+      "meta": {
+        "view": "web",
+        "url": "http://TAILSCALE_IP:9090",
+        "pinnedurl": "http://TAILSCALE_IP:9090"
+      }
+    }
+  },
+  "import-project": {
+    "icon": "download",
+    "label": "Import",
+    "color": "#38bdf8",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "ssh://dev@TAILSCALE_IP:2222",
+        "cmd": "/home/dev/projects/nai-workbench/bin/import-project"
+      }
+    }
+  },
+  "code-server": {
+    "icon": "code",
+    "label": "VS Code",
+    "color": "#f87171",
+    "blockdef": {
+      "meta": {
+        "view": "web",
+        "url": "http://TAILSCALE_IP:9091",
+        "pinnedurl": "http://TAILSCALE_IP:9091"
+      }
+    }
+  }
+}

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Import a GitHub repo into ~/projects/
+# Interactive terminal — no UI needed.
+set -euo pipefail
+
+PROJECTS_DIR="$HOME/projects"
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hooks"
+TEMPLATE_CLAUDE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/templates/project-claude.md"
+
+echo "╔══════════════════════════════════════╗"
+echo "║       IMPORT PROJECT FROM GITHUB     ║"
+echo "╚══════════════════════════════════════╝"
+echo ""
+
+# Show existing projects
+echo "Current projects:"
+for d in "$PROJECTS_DIR"/*/; do
+  [ -d "$d" ] && echo "  • $(basename "$d")"
+done 2>/dev/null
+echo ""
+
+# Let user choose: pick from their repos or paste a URL
+echo "Options:"
+echo "  1) Pick from your GitHub repos"
+echo "  2) Paste a repo URL"
+echo ""
+read -rp "Choice [1/2]: " choice
+
+REPO_URL=""
+REPO_NAME=""
+
+if [ "$choice" = "1" ]; then
+  echo ""
+  echo "Fetching your repos..."
+  mapfile -t repos < <(gh repo list --limit 50 --json nameWithOwner,description --jq '.[] | .nameWithOwner + " | " + (.description // "no description")')
+
+  if [ ${#repos[@]} -eq 0 ]; then
+    echo "No repos found."
+    exit 1
+  fi
+
+  echo ""
+  for i in "${!repos[@]}"; do
+    printf "  %2d) %s\n" "$((i + 1))" "${repos[$i]}"
+  done
+  echo ""
+  read -rp "Pick a repo number: " pick
+  pick=$((pick - 1))
+
+  if [ "$pick" -lt 0 ] || [ "$pick" -ge "${#repos[@]}" ]; then
+    echo "Invalid selection."
+    exit 1
+  fi
+
+  REPO_FULL=$(echo "${repos[$pick]}" | cut -d'|' -f1 | xargs)
+  REPO_URL="https://github.com/${REPO_FULL}.git"
+  REPO_NAME=$(basename "$REPO_FULL")
+else
+  echo ""
+  read -rp "Repo URL (https or git@): " REPO_URL
+  REPO_NAME=$(basename "$REPO_URL" .git)
+fi
+
+TARGET="$PROJECTS_DIR/$REPO_NAME"
+
+if [ -d "$TARGET" ]; then
+  echo ""
+  echo "⚠ $REPO_NAME already exists at $TARGET"
+  read -rp "Pull latest instead? [y/N]: " pull
+  if [[ "$pull" =~ ^[Yy] ]]; then
+    git -C "$TARGET" pull
+    echo "✓ Updated $REPO_NAME"
+  fi
+  exit 0
+fi
+
+# Clone
+echo ""
+echo "Cloning $REPO_URL → $TARGET ..."
+git clone "$REPO_URL" "$TARGET"
+
+# Install security hooks if available
+if [ -f "$HOOKS_DIR/install-hooks.sh" ]; then
+  echo ""
+  read -rp "Install security hooks (gitleaks/semgrep/trivy)? [Y/n]: " hooks
+  if [[ ! "$hooks" =~ ^[Nn] ]]; then
+    bash "$HOOKS_DIR/install-hooks.sh" "$TARGET"
+    echo "✓ Hooks installed"
+  fi
+fi
+
+# Copy CLAUDE.md template if project doesn't have one
+if [ ! -f "$TARGET/CLAUDE.md" ] && [ -f "$TEMPLATE_CLAUDE" ]; then
+  echo ""
+  read -rp "Add CLAUDE.md template? [Y/n]: " claude
+  if [[ ! "$claude" =~ ^[Nn] ]]; then
+    cp "$TEMPLATE_CLAUDE" "$TARGET/CLAUDE.md"
+    echo "✓ CLAUDE.md added"
+  fi
+fi
+
+echo ""
+echo "╔══════════════════════════════════════╗"
+echo "  ✓ $REPO_NAME imported to $TARGET"
+echo "╚══════════════════════════════════════╝"
+echo ""
+echo "Next steps:"
+echo "  • Click 'Claude' widget → cd ~/projects/$REPO_NAME && claude"
+echo "  • Click 'VS Code' widget → open in browser editor"
+echo ""

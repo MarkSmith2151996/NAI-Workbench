@@ -1,0 +1,10 @@
+{
+  "wsl://Ubuntu-24.04": {
+    "conn:wshenabled": true,
+    "term:fontsize": 13,
+    "cmd:env": {
+      "TERM": "xterm-256color",
+      "COLORTERM": "truecolor"
+    }
+  }
+}

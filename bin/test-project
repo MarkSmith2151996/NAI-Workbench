@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# test-project — Auto-detect test pipeline with AI-assisted debugging
+# Stages: lint → type-check → test → coverage → security
+set -uo pipefail
+
+PROJECTS_DIR="$HOME/projects"
+WORKBENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+echo "╔══════════════════════════════════════╗"
+echo "║          TEST PROJECT PIPELINE       ║"
+echo "╚══════════════════════════════════════╝"
+echo ""
+
+# --- Project picker ---
+projects=()
+for d in "$PROJECTS_DIR"/*/; do
+  [ -d "$d/.git" ] && projects+=("$(basename "$d")")
+done
+
+if [ ${#projects[@]} -eq 0 ]; then
+  echo "No git projects found in $PROJECTS_DIR"
+  exit 1
+fi
+
+for i in "${!projects[@]}"; do
+  name="${projects[$i]}"
+  dir="$PROJECTS_DIR/$name"
+
+  # Detect stack
+  if [ -f "$dir/package.json" ]; then
+    stack="Node"
+  elif [ -f "$dir/pyproject.toml" ] || [ -f "$dir/requirements.txt" ] || [ -f "$dir/setup.cfg" ]; then
+    stack="Python"
+  elif [ -d "$dir/bin" ]; then
+    stack="Bash"
+  else
+    stack="Unknown"
+  fi
+
+  printf "  %d) %-22s (%s)\n" "$((i + 1))" "$name" "$stack"
+done
+
+echo ""
+read -rp "Pick a project [1-${#projects[@]}]: " pick
+pick=$((pick - 1))
+
+if [ "$pick" -lt 0 ] || [ "$pick" -ge "${#projects[@]}" ]; then
+  echo "Invalid selection."
+  exit 1
+fi
+
+PROJECT="${projects[$pick]}"
+PROJECT_DIR="$PROJECTS_DIR/$PROJECT"
+cd "$PROJECT_DIR"
+
+echo ""
+echo "══════════════════════════════════════"
+echo "  Testing: $PROJECT"
+echo "  Path:    $PROJECT_DIR"
+echo "══════════════════════════════════════"
+echo ""
+
+FAILURES=""
+FAIL_OUTPUT=""
+
+# --- Detect stack ---
+is_node=false
+is_python=false
+
+[ -f "package.json" ] && is_node=true
+{ [ -f "pyproject.toml" ] || [ -f "requirements.txt" ] || [ -f "setup.cfg" ] || [ -d "tests" ]; } && is_python=true
+
+if ! $is_node && ! $is_python; then
+  echo "⚠ No test framework detected."
+  echo ""
+  echo "  Suggestions:"
+  echo "    Node:   npm init && npm install --save-dev vitest"
+  echo "    Python: pip install pytest && mkdir tests/"
+  echo ""
+  exit 0
+fi
+
+# --- Helper: run a stage ---
+run_stage() {
+  local stage_name="$1"
+  local stage_num="$2"
+  local cmd="$3"
+
+  echo "[$stage_num] $stage_name"
+  echo "    → $cmd"
+  echo ""
+
+  local output
+  local exit_code
+  output=$(eval "$cmd" 2>&1)
+  exit_code=$?
+
+  if [ $exit_code -ne 0 ]; then
+    echo "$output"
+    echo ""
+    echo "    ✗ $stage_name FAILED (exit $exit_code)"
+    FAILURES="$FAILURES  • $stage_name\n"
+    FAIL_OUTPUT="$FAIL_OUTPUT\n=== $stage_name FAILURE ===\n$output\n"
+  else
+    echo "    ✓ $stage_name passed"
+  fi
+  echo ""
+}
+
+stage=0
+
+# ═══════ STAGE 1: LINT ═══════
+if $is_node; then
+  has_lint=$(node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1)" 2>/dev/null && echo "yes" || echo "no")
+  if [ "$has_lint" = "yes" ]; then
+    stage=$((stage + 1))
+    run_stage "Lint (eslint)" "$stage/5" "npm run lint"
+  fi
+elif $is_python; then
+  if command -v ruff &>/dev/null; then
+    stage=$((stage + 1))
+    run_stage "Lint (ruff)" "$stage/5" "ruff check ."
+  elif command -v flake8 &>/dev/null; then
+    stage=$((stage + 1))
+    run_stage "Lint (flake8)" "$stage/5" "flake8 ."
+  fi
+fi
+
+# ═══════ STAGE 2: TYPE CHECK ═══════
+if $is_node; then
+  has_typecheck=$(node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['type-check'] ? 0 : 1)" 2>/dev/null && echo "yes" || echo "no")
+  if [ "$has_typecheck" = "yes" ]; then
+    stage=$((stage + 1))
+    run_stage "Type check (tsc)" "$stage/5" "npm run type-check"
+  fi
+elif $is_python; then
+  if command -v mypy &>/dev/null; then
+    stage=$((stage + 1))
+    run_stage "Type check (mypy)" "$stage/5" "mypy ."
+  fi
+fi
+
+# ═══════ STAGE 3: TEST ═══════
+if $is_node; then
+  has_test=$(node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)" 2>/dev/null && echo "yes" || echo "no")
+  if [ "$has_test" = "yes" ]; then
+    stage=$((stage + 1))
+    run_stage "Tests" "$stage/5" "npm test"
+  else
+    echo "[?/5] Tests"
+    echo "    ⚠ No test script in package.json"
+    echo ""
+  fi
+elif $is_python; then
+  if command -v pytest &>/dev/null || python -m pytest --version &>/dev/null 2>&1; then
+    stage=$((stage + 1))
+    run_stage "Tests (pytest)" "$stage/5" "python -m pytest -v"
+  else
+    echo "[?/5] Tests"
+    echo "    ⚠ pytest not installed"
+    echo ""
+  fi
+fi
+
+# ═══════ STAGE 4: COVERAGE (non-blocking) ═══════
+if $is_node; then
+  has_cov=$(node -e "const p=require('./package.json'); const d=Object.assign({},p.devDependencies,p.dependencies); process.exit(d.nyc||d.c8||d['@vitest/coverage-v8'] ? 0 : 1)" 2>/dev/null && echo "yes" || echo "no")
+  if [ "$has_cov" = "yes" ]; then
+    stage=$((stage + 1))
+    echo "[$stage/5] Coverage"
+    echo "    → npm test -- --coverage (best-effort)"
+    npm test -- --coverage 2>&1 | tail -20 || true
+    echo "    ✓ Coverage report above (non-blocking)"
+    echo ""
+  fi
+elif $is_python; then
+  if pip show pytest-cov &>/dev/null 2>&1; then
+    stage=$((stage + 1))
+    echo "[$stage/5] Coverage"
+    echo "    → python -m pytest --cov (best-effort)"
+    python -m pytest --cov --cov-report=term-missing -q 2>&1 | tail -30 || true
+    echo "    ✓ Coverage report above (non-blocking)"
+    echo ""
+  fi
+fi
+
+# ═══════ STAGE 5: SECURITY ═══════
+if [ -x "$WORKBENCH_DIR/bin/quick-scan" ]; then
+  stage=$((stage + 1))
+  echo "[$stage/5] Security (quick-scan)"
+  echo "    → quick-scan $PROJECT_DIR"
+  echo ""
+  sec_output=$("$WORKBENCH_DIR/bin/quick-scan" "$PROJECT_DIR" 2>&1) || true
+  sec_exit=$?
+  echo "$sec_output"
+  if [ $sec_exit -ne 0 ]; then
+    FAILURES="$FAILURES  • Security scan\n"
+    FAIL_OUTPUT="$FAIL_OUTPUT\n=== SECURITY SCAN FAILURE ===\n$sec_output\n"
+  fi
+  echo ""
+fi
+
+# ═══════ RESULTS ═══════
+echo "══════════════════════════════════════"
+if [ -z "$FAILURES" ]; then
+  echo "  ✓ All stages passed for $PROJECT"
+else
+  echo "  ✗ Failures detected in $PROJECT:"
+  echo ""
+  echo -e "$FAILURES"
+  echo "══════════════════════════════════════"
+  echo ""
+  read -rp "Send failures to Claude for analysis? [Y/n]: " send_to_claude
+  if [[ ! "$send_to_claude" =~ ^[Nn] ]]; then
+    # Truncate output if too long (keep last 3000 chars)
+    trimmed=$(echo -e "$FAIL_OUTPUT" | tail -c 3000)
+    prompt="Debug these test/lint failures for the $PROJECT project ($PROJECT_DIR). Here is the output:
+
+$trimmed
+
+Analyze the failures. Suggest specific fixes with file paths and line numbers."
+    echo ""
+    echo "Launching Claude with failure context..."
+    cd "$PROJECT_DIR"
+    exec claude -p "$prompt"
+  fi
+fi
+echo "══════════════════════════════════════"

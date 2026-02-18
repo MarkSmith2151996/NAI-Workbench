@@ -1,0 +1,12 @@
+# Secrets
+config/penpot/compose.env
+config/komodo/compose.env
+
+# Python
+__pycache__/
+*.pyc
+dashboard/.venv/
+
+# OS
+.DS_Store
+Thumbs.db

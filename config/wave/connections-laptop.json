@@ -1,0 +1,11 @@
+{
+  "ssh://dev@TAILSCALE_IP:2222": {
+    "conn:wshenabled": true,
+    "term:fontsize": 13,
+    "ssh:identityfile": ["~/.ssh/id_ed25519"],
+    "cmd:env": {
+      "TERM": "xterm-256color",
+      "COLORTERM": "truecolor"
+    }
+  }
+}

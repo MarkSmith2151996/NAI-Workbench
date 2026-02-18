@@ -1,0 +1,69 @@
+services:
+  penpot-frontend:
+    image: penpotapp/frontend:latest
+    restart: unless-stopped
+    ports:
+      - 9001:8080
+    depends_on:
+      - penpot-backend
+      - penpot-exporter
+    networks:
+      - penpot
+    volumes:
+      - penpot-assets:/opt/data/assets
+    env_file:
+      - compose.env
+
+  penpot-backend:
+    image: penpotapp/backend:latest
+    restart: unless-stopped
+    depends_on:
+      - penpot-postgres
+      - penpot-redis
+    networks:
+      - penpot
+    volumes:
+      - penpot-assets:/opt/data/assets
+    env_file:
+      - compose.env
+    environment:
+      PENPOT_PREPL_HOST: "0.0.0.0"
+
+  penpot-exporter:
+    image: penpotapp/exporter:latest
+    restart: unless-stopped
+    depends_on:
+      - penpot-backend
+    networks:
+      - penpot
+    env_file:
+      - compose.env
+    environment:
+      PENPOT_PUBLIC_URI: http://penpot-frontend
+      PENPOT_BACKEND_URI: http://penpot-backend:6060
+
+  penpot-postgres:
+    image: postgres:15
+    restart: unless-stopped
+    networks:
+      - penpot
+    volumes:
+      - penpot-db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_INITDB_ARGS: --data-checksums
+      POSTGRES_DB: penpot
+      POSTGRES_USER: penpot
+      POSTGRES_PASSWORD: ${PENPOT_DATABASE_PASSWORD:-penpot}
+
+  penpot-redis:
+    image: redis:7
+    restart: unless-stopped
+    networks:
+      - penpot
+
+networks:
+  penpot:
+
+volumes:
+  penpot-assets:
+  penpot-db:

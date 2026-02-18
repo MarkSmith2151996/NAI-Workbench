@@ -1,0 +1,3 @@
+textual>=0.47.0
+httpx>=0.25.0
+psutil>=5.9.0
