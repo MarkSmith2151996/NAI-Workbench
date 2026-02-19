@@ -94,5 +94,17 @@
         "pinnedurl": "http://TAILSCALE_IP:9091"
       }
     }
+  },
+  "admin-01": {
+    "icon": "shield-halved",
+    "label": "ADMIN 01",
+    "color": "#ef4444",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP 'cd /home/dev/projects/nai-workbench && claude'"
+      }
+    }
   }
 }

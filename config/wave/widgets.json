@@ -98,5 +98,18 @@
         "pinnedurl": "http://localhost:9091"
       }
     }
+  },
+  "admin-01": {
+    "icon": "shield-halved",
+    "label": "ADMIN 01",
+    "color": "#ef4444",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "wsl://Ubuntu-24.04",
+        "cmd": "cd /home/dev/projects/nai-workbench && claude"
+      }
+    }
   }
 }
