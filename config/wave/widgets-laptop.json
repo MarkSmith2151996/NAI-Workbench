@@ -6,8 +6,8 @@
     "blockdef": {
       "meta": {
         "view": "term",
-        "controller": "shell",
-        "connection": "ssh://dev@TAILSCALE_IP:2222"
+        "controller": "cmd",
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP"
       }
     }
   },
@@ -19,8 +19,7 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "connection": "ssh://dev@TAILSCALE_IP:2222",
-        "cmd": "/home/dev/projects/nai-workbench/bin/launch-dashboard"
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/launch-dashboard"
       }
     }
   },
@@ -32,8 +31,7 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "connection": "ssh://dev@TAILSCALE_IP:2222",
-        "cmd": "/home/dev/projects/nai-workbench/bin/claude-session"
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/claude-session"
       }
     }
   },
@@ -45,8 +43,7 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "connection": "ssh://dev@TAILSCALE_IP:2222",
-        "cmd": "/home/dev/projects/nai-workbench/bin/test-project"
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/test-project"
       }
     }
   },
@@ -82,8 +79,7 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "connection": "ssh://dev@TAILSCALE_IP:2222",
-        "cmd": "/home/dev/projects/nai-workbench/bin/import-project"
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/import-project"
       }
     }
   },
