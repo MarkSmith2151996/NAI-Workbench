@@ -108,7 +108,7 @@
         "view": "term",
         "controller": "cmd",
         "connection": "wsl://Ubuntu-24.04",
-        "cmd": "cd /home/dev/projects/nai-workbench && claude"
+        "cmd": "/home/dev/projects/nai-workbench/bin/admin-session"
       }
     }
   }

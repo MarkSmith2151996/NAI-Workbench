@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# admin-session — Launch Claude Code in the nai-workbench project dir
+cd /home/dev/projects/nai-workbench
+exec claude
