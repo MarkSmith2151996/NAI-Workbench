@@ -3,7 +3,7 @@
 This repo contains the setup, config, and tooling for a persistent dev environment accessed via **Wave Terminal** with a **Textual TUI dashboard**.
 
 ## Stack
-- WSL2 Ubuntu 24.04 + code-server + tmux + Docker
+- WSL2 Ubuntu 24.04 (NAT mode) + code-server + tmux + Docker
 - **Wave Terminal** (Windows + Arch laptop) — split panes, web widgets, WSL/SSH integration
 - **Textual TUI Dashboard** — real-time service health, Docker, system metrics
 - Komodo dashboard (web UI for Docker, projects, scripts)
@@ -11,7 +11,7 @@ This repo contains the setup, config, and tooling for a persistent dev environme
 - Claude CLI (runs natively in Wave terminal pane — MCP works out of the box)
 - MCP servers: repomix, memory, filesystem
 - Security: Trivy, Semgrep, Gitleaks, OWASP ZAP, k6
-- **Remote access**: Tailscale (Windows app) + SSH on WSL port 2222
+- **Remote access**: Tailscale (Windows system service) + `netsh interface portproxy` + OpenSSH (port 2223 internal / 2222 external)
 
 ## Architecture
 
@@ -31,29 +31,46 @@ Wave Terminal (Windows PC — local, or Arch Laptop — via Tailscale SSH)
 ### Remote Access Architecture
 
 ```
-Arch Laptop                          Windows PC
-┌─────────────┐    Tailscale VPN    ┌──────────────────┐
-│ Wave Terminal│◄──────────────────► │ Tailscale (Win)  │
-│ (thin client)│   100.x.x.x        │                  │
-│              │                     │ WSL2 services:   │
-│ widgets use  │   ssh://dev@...:2222│  ├─ sshd   :2222 │
-│ ssh:// conn  │                     │  ├─ Penpot :9001 │
-│ web widgets  │   http://100.x:PORT │  ├─ Komodo :9090 │
-└─────────────┘                     │  └─ code-sv:9091 │
-                                    └──────────────────┘
+Arch Laptop (100.79.63.10)
+    │
+    │  Tailscale VPN tunnel
+    ▼
+Windows PC (100.95.20.98)           ← Tailscale runs here as system service
+    │
+    │  netsh interface portproxy (binds 0.0.0.0:PORT)
+    ▼
+WSL2 Ubuntu (172.21.x.x NAT IP)    ← NAT mode, IP may change on reboot
+    │
+    ▼
+Docker containers / systemd services
 ```
 
-- **Tailscale runs on Windows** (not WSL) — proper system service, always online
-- WSL2 auto-forwards ports to Windows, so WSL services are reachable via Tailscale IP
+**Port proxy chain** (how external traffic reaches WSL):
+- `0.0.0.0:9001` → `WSL_NAT_IP:9001` (Penpot)
+- `0.0.0.0:9090` → `WSL_NAT_IP:9090` (Komodo)
+- `0.0.0.0:9091` → `WSL_NAT_IP:9091` (code-server)
+- `0.0.0.0:2222` → `127.0.0.1:2223` (sshd — uses localhost, immune to IP changes)
+
 - **PC widgets**: `wsl://Ubuntu-24.04` connections, `localhost` URLs
-- **Laptop widgets**: `ssh://dev@TAILSCALE_IP:2222` connections, `http://TAILSCALE_IP:PORT` URLs
-- Laptop config uses `TAILSCALE_IP` placeholder, replaced with `sed` during setup
+- **Laptop widgets**: `ssh -t` commands in local terminal (NOT Wave's built-in SSH client), `http://TAILSCALE_IP:PORT` URLs
 
 ## Ports
-- **2222** — SSH server (OpenSSH in WSL, pubkey auth only)
-- **9001** — Penpot design tool (self-hosted Figma alternative)
-- **9090** — Komodo dashboard (Docker, system health, scripts)
-- **9091** — code-server (VS Code in browser)
+
+| External | Internal | Service | Notes |
+|----------|----------|---------|-------|
+| `2222` | `127.0.0.1:2223` | sshd (OpenSSH) | Pubkey auth only. Immune to WSL IP changes |
+| `9001` | `WSL_IP:9001` | Penpot | Docker maps `9001:8080` (nginx listens on 8080 inside container) |
+| `9090` | `WSL_IP:9090` | Komodo | Docker maps `9090:9120` |
+| `9091` | `WSL_IP:9091` | code-server | VS Code in browser |
+
+## Networking
+
+- **WSL2 NAT mode** — WSL gets a private NAT IP (`172.21.x.x`) that may change on reboot
+- **Port proxy** (`netsh interface portproxy`) forwards external ports from Windows (`0.0.0.0`) to WSL NAT IP
+- **sshd is special**: external `2222` forwards to `127.0.0.1:2223` (not WSL NAT IP), so SSH survives IP changes
+- **Mirrored networking** was tried and abandoned — causes port conflicts with `netsh portproxy` and Docker
+- **Laptop widgets** use `ssh -t` commands in Wave's local terminal, NOT Wave's built-in SSH client (broken with Tailscale)
+- See `docs/operations.md` for full networking details and troubleshooting
 
 ## Key Paths
 - TUI dashboard: `dashboard/`
@@ -68,6 +85,8 @@ Arch Laptop                          Windows PC
 - Pipeline scripts: `bin/`
 - Dev container templates: `templates/`
 - Laptop setup guide: `docs/laptop-setup.md`
+- Operations runbook: `docs/operations.md`
+- Session context: `docs/session-context.md`
 
 ## Scripts (bin/)
 - `workbench-status` — Full system status overview
@@ -88,12 +107,18 @@ Wave Terminal is the primary interface. The TUI dashboard (`dashboard/dashboard.
 ## Auto-Start
 `config/start-workbench.vbs` runs at Windows boot via Task Scheduler:
 1. Docker + code-server
-2. sshd on port 2222
+2. sshd on port 2223 (creates `/run/sshd` first)
 3. Komodo (Docker compose)
 4. Penpot (Docker compose — 5 containers)
 5. Wave Terminal
 
-Tailscale runs as a Windows system service (installed separately) — always on, no VBS management needed. Penpot containers have `restart: unless-stopped` so they auto-start with Docker.
+**Persistent across reboots** (no VBS management needed):
+- Tailscale — Windows system service, always on
+- Port proxy rules (`netsh interface portproxy`) — survive reboots
+- Windows Firewall rule ("NAI Workbench") — survives reboots
+- Penpot containers — `restart: unless-stopped`
+
+**Note**: `/run/sshd` disappears on every WSL restart; the VBS script recreates it. The VBS script needs to use port `2223` for sshd (not 2222).
 
 ## Penpot
 - Self-hosted Figma alternative at port 9001
@@ -102,3 +127,11 @@ Tailscale runs as a Windows system service (installed separately) — always on,
 - Env config: `config/penpot/compose.env` (copy from `compose.env.template`, fill in secrets)
 - Account: `admin@local.dev` / `admin123`
 - Registration disabled after initial setup
+
+## Known Gotchas
+- `/run/sshd` disappears on WSL restart — must `mkdir -p /run/sshd` before starting sshd
+- WSL NAT IP can change on reboot — port proxy rules for 9001/9090/9091 need updating (2222 is fine, uses localhost)
+- Penpot internal port is **8080** not 80 — Docker mapping must be `9001:8080`
+- Claude Code needs browser auth once from the PC directly (not via SSH)
+- Wave SSH integration is broken with Tailscale — laptop widgets use `ssh -t` in local terminal
+- See `docs/operations.md` for full troubleshooting and recovery procedures
