@@ -9,57 +9,129 @@ echo "║       CLAUDE — PROJECT PICKER        ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 
-# --- Build project list ---
+# --- Build local project list ---
 projects=()
 for d in "$PROJECTS_DIR"/*/; do
   [ -d "$d" ] && projects+=("$(basename "$d")")
 done
 
+echo "  Local projects:"
+echo "  ───────────────"
 if [ ${#projects[@]} -eq 0 ]; then
-  echo "No projects found in $PROJECTS_DIR"
-  exit 1
-fi
+  echo "  (none)"
+else
+  for i in "${!projects[@]}"; do
+    name="${projects[$i]}"
+    dir="$PROJECTS_DIR/$name"
 
-for i in "${!projects[@]}"; do
-  name="${projects[$i]}"
-  dir="$PROJECTS_DIR/$name"
-
-  # Detect stack type
-  if [ -f "$dir/package.json" ]; then
-    stack="Node"
-  elif [ -f "$dir/pyproject.toml" ] || [ -f "$dir/requirements.txt" ] || [ -f "$dir/setup.cfg" ]; then
-    stack="Python"
-  elif ls "$dir"/bin/* &>/dev/null; then
-    stack="Bash"
-  else
-    stack="Other"
-  fi
-
-  # Git info
-  branch=""
-  changed=""
-  if [ -d "$dir/.git" ]; then
-    branch=$(git -C "$dir" branch --show-current 2>/dev/null || echo "")
-    change_count=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$change_count" -gt 0 ]; then
-      changed="  ${change_count} changed"
+    # Detect stack type
+    if [ -f "$dir/package.json" ]; then
+      stack="Node"
+    elif [ -f "$dir/pyproject.toml" ] || [ -f "$dir/requirements.txt" ] || [ -f "$dir/setup.cfg" ]; then
+      stack="Python"
+    elif ls "$dir"/bin/* &>/dev/null; then
+      stack="Bash"
+    else
+      stack="Other"
     fi
-  fi
 
-  printf "  %d) %-20s (%-6s)  %-8s%s\n" "$((i + 1))" "$name" "$stack" "$branch" "$changed"
-done
+    # Git info
+    branch=""
+    changed=""
+    if [ -d "$dir/.git" ]; then
+      branch=$(git -C "$dir" branch --show-current 2>/dev/null || echo "")
+      change_count=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      if [ "$change_count" -gt 0 ]; then
+        changed="  ${change_count} changed"
+      fi
+    fi
 
-echo ""
-read -rp "Pick a project [1-${#projects[@]}]: " pick
-pick=$((pick - 1))
-
-if [ "$pick" -lt 0 ] || [ "$pick" -ge "${#projects[@]}" ]; then
-  echo "Invalid selection."
-  exit 1
+    printf "  %d) %-20s (%-6s)  %-8s%s\n" "$((i + 1))" "$name" "$stack" "$branch" "$changed"
+  done
 fi
 
-PROJECT="${projects[$pick]}"
-PROJECT_DIR="$PROJECTS_DIR/$PROJECT"
+local_count=${#projects[@]}
+echo ""
+echo "  Other options:"
+echo "  ──────────────"
+echo "  g) Clone from GitHub (browse your repos)"
+echo "  u) Clone from URL"
+echo "  q) Quit"
+echo ""
+read -rp "Pick [1-${local_count}, g, u, q]: " pick
+
+case "$pick" in
+  q|Q)
+    exit 0
+    ;;
+  g|G)
+    # Fetch repos from GitHub
+    echo ""
+    echo "  Fetching your GitHub repos..."
+    mapfile -t repos < <(gh repo list --limit 30 --json name,updatedAt,description --jq '.[] | .name' 2>/dev/null)
+
+    if [ ${#repos[@]} -eq 0 ]; then
+      echo "  No repos found or gh not authenticated."
+      exit 1
+    fi
+
+    echo ""
+    echo "  Your GitHub repos:"
+    echo "  ──────────────────"
+    for i in "${!repos[@]}"; do
+      repo="${repos[$i]}"
+      # Mark if already cloned locally
+      if [ -d "$PROJECTS_DIR/$repo" ]; then
+        printf "  %d) %-30s (already local)\n" "$((i + 1))" "$repo"
+      else
+        printf "  %d) %s\n" "$((i + 1))" "$repo"
+      fi
+    done
+
+    echo ""
+    read -rp "Pick a repo [1-${#repos[@]}]: " rpick
+    rpick=$((rpick - 1))
+
+    if [ "$rpick" -lt 0 ] || [ "$rpick" -ge "${#repos[@]}" ]; then
+      echo "Invalid selection."
+      exit 1
+    fi
+
+    REPO_NAME="${repos[$rpick]}"
+    PROJECT_DIR="$PROJECTS_DIR/$REPO_NAME"
+
+    if [ -d "$PROJECT_DIR" ]; then
+      echo "  Already cloned. Opening..."
+    else
+      echo "  Cloning $REPO_NAME..."
+      gh repo clone "$REPO_NAME" "$PROJECT_DIR" 2>&1
+      echo "  Cloned to $PROJECT_DIR"
+    fi
+    ;;
+  u|U)
+    echo ""
+    read -rp "  Repo URL: " repo_url
+    REPO_NAME=$(basename "$repo_url" .git)
+    PROJECT_DIR="$PROJECTS_DIR/$REPO_NAME"
+
+    if [ -d "$PROJECT_DIR" ]; then
+      echo "  Already exists. Opening..."
+    else
+      echo "  Cloning $REPO_NAME..."
+      git clone "$repo_url" "$PROJECT_DIR" 2>&1
+      echo "  Cloned to $PROJECT_DIR"
+    fi
+    ;;
+  *)
+    pick=$((pick - 1))
+    if [ "$pick" -lt 0 ] || [ "$pick" -ge "$local_count" ]; then
+      echo "Invalid selection."
+      exit 1
+    fi
+    PROJECT="${projects[$pick]}"
+    PROJECT_DIR="$PROJECTS_DIR/$PROJECT"
+    ;;
+esac
 
 echo ""
 echo "Launching Claude in $PROJECT_DIR..."
