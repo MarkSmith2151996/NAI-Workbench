@@ -11,7 +11,7 @@ This repo contains the setup, config, and tooling for a persistent dev environme
 - Claude CLI (runs natively in Wave terminal pane — MCP works out of the box)
 - MCP servers: repomix, memory, filesystem
 - Security: Trivy, Semgrep, Gitleaks, OWASP ZAP, k6
-- **Remote access**: Tailscale VPN + SSH (laptop → PC)
+- **Remote access**: Tailscale (Windows app) + SSH on WSL port 2222
 
 ## Architecture
 
@@ -31,23 +31,26 @@ Wave Terminal (Windows PC — local, or Arch Laptop — via Tailscale SSH)
 ### Remote Access Architecture
 
 ```
-Arch Laptop                          Windows PC (WSL2)
+Arch Laptop                          Windows PC
 ┌─────────────┐    Tailscale VPN    ┌──────────────────┐
-│ Wave Terminal│◄──────────────────► │ tailscaled       │
-│  (thin client)│   100.x.x.x:2222  │ sshd (port 2222) │
-│             │                     │ Docker services:  │
-│ widgets use │   ssh://dev@...     │  ├─ Penpot  :9001 │
-│ ssh:// conn │                     │  ├─ Komodo  :9090 │
-│ web widgets │   http://100.x:PORT │  └─ code-srv:9091 │
-└─────────────┘                     └──────────────────┘
+│ Wave Terminal│◄──────────────────► │ Tailscale (Win)  │
+│ (thin client)│   100.x.x.x        │                  │
+│              │                     │ WSL2 services:   │
+│ widgets use  │   ssh://dev@...:2222│  ├─ sshd   :2222 │
+│ ssh:// conn  │                     │  ├─ Penpot :9001 │
+│ web widgets  │   http://100.x:PORT │  ├─ Komodo :9090 │
+└─────────────┘                     │  └─ code-sv:9091 │
+                                    └──────────────────┘
 ```
 
+- **Tailscale runs on Windows** (not WSL) — proper system service, always online
+- WSL2 auto-forwards ports to Windows, so WSL services are reachable via Tailscale IP
 - **PC widgets**: `wsl://Ubuntu-24.04` connections, `localhost` URLs
 - **Laptop widgets**: `ssh://dev@TAILSCALE_IP:2222` connections, `http://TAILSCALE_IP:PORT` URLs
 - Laptop config uses `TAILSCALE_IP` placeholder, replaced with `sed` during setup
 
 ## Ports
-- **2222** — SSH server (OpenSSH, pubkey auth only)
+- **2222** — SSH server (OpenSSH in WSL, pubkey auth only)
 - **9001** — Penpot design tool (self-hosted Figma alternative)
 - **9090** — Komodo dashboard (Docker, system health, scripts)
 - **9091** — code-server (VS Code in browser)
@@ -85,18 +88,17 @@ Wave Terminal is the primary interface. The TUI dashboard (`dashboard/dashboard.
 ## Auto-Start
 `config/start-workbench.vbs` runs at Windows boot via Task Scheduler:
 1. Docker + code-server
-2. tailscaled (VPN daemon)
-3. sshd on port 2222
-4. Komodo (Docker compose)
-5. Penpot (Docker compose — 5 containers)
-6. Wave Terminal
+2. sshd on port 2222
+3. Komodo (Docker compose)
+4. Penpot (Docker compose — 5 containers)
+5. Wave Terminal
 
-Penpot containers have `restart: unless-stopped` so they auto-start with Docker after first run.
+Tailscale runs as a Windows system service (installed separately) — always on, no VBS management needed. Penpot containers have `restart: unless-stopped` so they auto-start with Docker.
 
 ## Penpot
 - Self-hosted Figma alternative at port 9001
 - 5 containers: frontend, backend, exporter, postgres, redis
 - Compose file: `config/penpot/compose.yaml`
-- Env config: `config/penpot/compose.env` (fill in secrets before first run)
-- First run: temporarily set `enable-registration` in `compose.env` PENPOT_FLAGS, restart, register at http://localhost:9001, then set back to `disable-registration`
-- PREPL enabled for CLI management via `manage.py`
+- Env config: `config/penpot/compose.env` (copy from `compose.env.template`, fill in secrets)
+- Account: `admin@local.dev` / `admin123`
+- Registration disabled after initial setup

@@ -5,8 +5,9 @@ Connect your Arch Linux laptop to the NAI Workbench running on your Windows PC v
 ## Prerequisites
 
 - Windows PC running the NAI Workbench (install.sh already run)
+- **Tailscale installed on Windows** (not WSL) — https://tailscale.com/download/windows
 - Arch Linux laptop with internet access
-- Both machines on the same Tailscale network
+- Both machines signed into the same Tailscale account
 
 ## 1. Install Wave Terminal
 
@@ -23,17 +24,19 @@ yay -S waveterm-bin
 yay -S tailscale
 sudo systemctl enable --now tailscaled
 sudo tailscale up
-# Follow the browser auth link to join your Tailscale network
+# Follow the browser auth link — sign into the same account as the PC
 ```
 
 ## 3. Get the PC's Tailscale IP
 
-On the **Windows PC** (in WSL):
+On the **Windows PC**, open PowerShell:
 
-```bash
+```powershell
 tailscale ip -4
-# Returns something like 100.64.x.x
+# Returns something like 100.87.241.23
 ```
+
+Or check the Tailscale system tray icon → "My devices" to find the IP.
 
 Note this IP — you'll need it for all configs below.
 
@@ -58,7 +61,7 @@ echo "ssh-ed25519 AAAA... laptop" >> /home/dev/.ssh/authorized_keys
 Test the connection from the laptop:
 
 ```bash
-ssh -p 2222 dev@100.64.x.x
+ssh -p 2222 dev@100.87.241.23
 # Should connect without a password prompt
 ```
 
@@ -67,7 +70,7 @@ ssh -p 2222 dev@100.64.x.x
 From the **laptop**, copy the configs from the PC via SCP:
 
 ```bash
-PC_IP="100.64.x.x"  # Replace with actual Tailscale IP
+PC_IP="100.87.241.23"  # Replace with actual Tailscale IP
 
 # Create Wave config directory
 mkdir -p ~/.config/waveterm
@@ -83,6 +86,14 @@ sed -i "s/TAILSCALE_IP/${PC_IP}/g" /tmp/connections.json
 # Install into Wave config
 cp /tmp/widgets.json ~/.config/waveterm/widgets.json
 cp /tmp/connections.json ~/.config/waveterm/connections.json
+```
+
+Alternatively, clone the repo and sed locally:
+
+```bash
+git clone https://github.com/MarkSmith2151996/NAI-Workbench.git /tmp/nai-workbench
+sed "s/TAILSCALE_IP/${PC_IP}/g" /tmp/nai-workbench/config/wave/widgets-laptop.json > ~/.config/waveterm/widgets.json
+sed "s/TAILSCALE_IP/${PC_IP}/g" /tmp/nai-workbench/config/wave/connections-laptop.json > ~/.config/waveterm/connections.json
 ```
 
 ## 6. Launch Wave and Verify
@@ -101,40 +112,40 @@ All 8 sidebar widgets should work:
 - **Import** — Clone repos into PC's ~/projects
 - **VS Code** — code-server (web UI from PC)
 
-## 7. Penpot First Run
+## 7. Penpot Login
 
-On the **PC** (one-time setup), create the admin account:
-
-```bash
-docker exec -it penpot-penpot-backend-1 python3 -m app.cli create-profile \
-  --email admin@local.dev --fullname "Dev Admin" --password "YOUR_PASSWORD"
-```
-
-Then open Penpot at `http://100.64.x.x:9001` from the laptop and log in.
+Penpot account is already created on the PC. Open `http://100.87.241.23:9001` from the laptop and log in with:
+- Email: `admin@local.dev`
+- Password: `admin123`
 
 ## Troubleshooting
 
 ### SSH connection refused
-- Verify sshd is running: `wsl -d Ubuntu-24.04 -- bash -c "ps aux | grep sshd"`
+- Verify sshd is running on the PC: `wsl -d Ubuntu-24.04 -- bash -c "ps aux | grep sshd"`
 - Check it's listening on 2222: `wsl -d Ubuntu-24.04 -- bash -c "ss -tlnp | grep 2222"`
-- Re-start sshd: `wsl -d Ubuntu-24.04 -- bash -c "sudo /usr/sbin/sshd"`
+- Re-start sshd: `wsl -d Ubuntu-24.04 -- bash -c "sudo mkdir -p /run/sshd && sudo /usr/sbin/sshd"`
 
 ### Tailscale not routing
-- Check both machines are on the same tailnet: `tailscale status`
-- Verify the PC's tailscaled is running: `wsl -d Ubuntu-24.04 -- bash -c "tailscale status"`
-- Re-authenticate if needed: `sudo tailscale up`
+- Check both machines are on the same tailnet: `tailscale status` (on both machines)
+- On the PC, check via PowerShell: `tailscale status`
+- Verify Tailscale Windows service is running: check system tray icon
+- Re-authenticate if needed: `tailscale up` (PowerShell as admin)
 
 ### Penpot shows blank page
-- Check all 5 containers are running: `docker compose -p penpot ps`
+- Check all 5 containers are running on PC: `docker compose -p penpot ps`
 - Check backend logs: `docker logs penpot-penpot-backend-1`
 - Ensure compose.env has real values (not CHANGE_ME placeholders)
 
 ### SSH auth fails (password prompt)
 - Verify your pubkey is in `/home/dev/.ssh/authorized_keys` on the PC
-- Check permissions: `chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys`
+- Check permissions: `chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys` (on PC in WSL)
 - Check sshd config: `cat /etc/ssh/sshd_config.d/workbench.conf`
 
 ### Wave widgets not loading
 - Verify `sed` replaced all `TAILSCALE_IP` instances: `grep TAILSCALE_IP ~/.config/waveterm/widgets.json`
-- Check the PC's Tailscale IP hasn't changed: `tailscale ip -4`
+- Check the PC's Tailscale IP hasn't changed: `tailscale ip -4` (PowerShell on PC)
 - Restart Wave after config changes
+
+### WSL ports not reachable via Tailscale IP
+- WSL2 auto-forwards ports to Windows. Verify locally on the PC first: `curl http://localhost:9001`
+- If localhost works but Tailscale IP doesn't, check Windows Firewall — allow inbound on ports 2222, 9001, 9090, 9091
