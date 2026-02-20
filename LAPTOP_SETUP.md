@@ -6,6 +6,95 @@
 
 ---
 
+## How to Update (Pull Latest Changes)
+
+> **Run these commands every time the PC pushes new code.** This is the fastest
+> way to get the laptop in sync — no re-setup needed.
+
+### Quick Update (90% of the time this is all you need)
+
+```bash
+# 1. SSH to the PC
+ssh BigA-PC
+
+# 2. Pull latest code in the WSL workbench
+cd /home/dev/projects/nai-workbench
+git pull origin main
+
+# 3. Done — restart the admin TUI if it's running
+#    (just quit with 'q' and re-launch from Wave widget)
+```
+
+### Full Update (after dependency or schema changes)
+
+```bash
+# 1. SSH to the PC
+ssh BigA-PC
+
+# 2. Pull latest
+cd /home/dev/projects/nai-workbench
+git pull origin main
+
+# 3. Update Python dependencies
+source custodian/.venv/bin/activate
+pip install -r custodian/requirements.txt
+
+# 4. Re-init the database (safe — only creates missing tables, won't drop data)
+python custodian/init_db.py
+
+# 5. Verify everything works
+python -c "
+from textual.widgets import DirectoryTree, TextArea, TabbedContent, RichLog
+from textual.app import App
+import mcp, tree_sitter, tree_sitter_languages
+import sqlite3
+conn = sqlite3.connect('custodian/custodian.db')
+tables = [r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()]
+projects = conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0]
+conn.close()
+print(f'Imports OK | Tables: {len(tables)} | Projects: {projects}')
+"
+# Expected: Imports OK | Tables: 6 | Projects: <number>
+
+# 6. Restart the admin TUI
+```
+
+### If things go wrong — Nuclear Reset
+
+```bash
+cd /home/dev/projects/nai-workbench
+
+# Throw away local changes and match GitHub exactly
+git fetch origin
+git reset --hard origin/main
+
+# Recreate venv from scratch
+rm -rf custodian/.venv
+python3 -m venv custodian/.venv
+source custodian/.venv/bin/activate
+pip install -r custodian/requirements.txt
+
+# Recreate database
+rm -f custodian/custodian.db custodian/custodian.db-wal custodian/custodian.db-shm
+python custodian/init_db.py
+
+# Verify
+python -c "import ast; ast.parse(open('custodian/admin.py').read()); print('SYNTAX OK')"
+python custodian/admin.py  # press 'q' to quit
+```
+
+### Where code lives
+
+| Location | What | Updated by |
+|----------|------|------------|
+| `C:\Users\Big A\NAI-Workbench` | Windows checkout (where PC Claude Code works) | PC Claude Code |
+| `/home/dev/projects/nai-workbench` | WSL checkout (where admin TUI runs) | `git pull origin main` |
+| GitHub `main` branch | Source of truth | PC pushes here |
+
+**Flow**: PC Claude Code edits Windows checkout → commits & pushes to GitHub → laptop runs `git pull` in WSL → restart admin TUI.
+
+---
+
 ## Overview: What You're Setting Up
 
 The Admin TUI (ADMIN 01) is a 6-tab Textual application that runs inside Wave
@@ -20,8 +109,8 @@ the laptop connects via Tailscale/SSH and edits the same files in real-time.
 Laptop (Wave Terminal)
   └── SSH via Tailscale → PC (Windows 11)
         └── bash bin/admin-session
-              └── python custodian/admin.py   ← Textual TUI, 1731 lines
-                    ├── [Projects]   Import repos, register local projects
+              └── python custodian/admin.py   ← Textual TUI, 1692 lines
+                    ├── [Projects]   Import from GitHub (clones to ~/projects/)
                     ├── [Custodian]  Index projects via Sonnet
                     ├── [Fossils]    Browse fossil history + details
                     ├── [Detective]  Pattern analysis (Sonnet/Opus)
@@ -49,7 +138,7 @@ C:\Users\Big A\NAI-Workbench\
 │   ├── admin-session                   # Widget entry point — activates venv + runs admin.py (22 lines)
 │   └── custodian                       # CLI: index, admin, mcp, status, help (143 lines)
 └── custodian/
-    ├── admin.py                        # Textual TUI — 6 tabs, 1731 lines
+    ├── admin.py                        # Textual TUI — 6 tabs, 1692 lines
     ├── mcp_server.py                   # MCP server — 8 tools, 573 lines
     ├── detective.py                    # Pattern analysis + prompt evolution, 383 lines
     ├── parse_symbols.py                # tree-sitter symbol extraction, 307 lines
@@ -74,67 +163,67 @@ C:\Users\Big A\NAI-Workbench\
 | `custodian_prompts` | Evolving prompts for Sonnet | project_id, prompt, created_by |
 | `query_log` | MCP tool usage tracking | tool_name, project_name, query_params |
 
-### Registered Projects (5)
+### Registered Projects
+
+Projects are imported via **GitHub URL** in the Projects tab. New imports clone to
+`~/projects/{repo-name}/` automatically. The seeded projects below have legacy
+paths — they'll be replaced as you re-import from GitHub.
 
 | Name | Path | Stack |
 |------|------|-------|
-| progress-tracker | `C:\Users\Big A\Progress-temp` | Next.js + React + Electron + Supabase + Zustand + react95 |
-| finance95 | `E:\Downloads\finance95-v2` | Electron + Vite + React + @actual-app/api + Zustand |
-| bjtrader | `D:\UserFolders\Desktop\BjTrader` | Python + Textual + LangGraph + Claude CLI |
-| fba-command-center | `D:\UserFolders\Desktop\Comand And Control\fba_v2_backup` | Python + tkinter + SQLite |
-| nai-workbench | `C:\Users\Big A\NAI-Workbench` | Python + Textual + MCP + SQLite + tree-sitter |
+| progress-tracker | (re-import from GitHub) | Next.js + React + Electron + Supabase + Zustand + react95 |
+| finance95 | (re-import from GitHub) | Electron + Vite + React + @actual-app/api + Zustand |
+| bjtrader | (re-import from GitHub) | Python + Textual + LangGraph + Claude CLI |
+| fba-command-center | (re-import from GitHub) | Python + tkinter + SQLite |
+| nai-workbench | `/home/dev/projects/nai-workbench` | Python + Textual + MCP + SQLite + tree-sitter |
 
 ---
 
-## Step-by-Step Deploy
+## Step-by-Step Deploy (First Time Only)
+
+> After first-time setup, see **"How to Update"** at the top of this doc.
 
 ### Step 1: SSH to PC from laptop
 
 ```bash
-# Replace with your PC's Tailscale hostname or IP
+# Via Tailscale — connects to WSL2 Ubuntu through port 2222 → 2223 proxy
+ssh dev@100.95.20.98 -p 2222
+# OR if you have a Tailscale hostname alias:
 ssh BigA-PC
-# OR
-ssh 100.x.x.x
 ```
 
-**Expected**: You get a shell on the PC.
+**Expected**: You get a bash shell on WSL2 Ubuntu as `dev`.
 
-### Step 2: Navigate to the workbench
+### Step 2: Clone the repo (or verify it exists)
 
 ```bash
-cd "C:/Users/Big A/NAI-Workbench"
-ls custodian/admin.py
+cd /home/dev/projects
+
+# If nai-workbench doesn't exist yet:
+git clone https://github.com/MarkSmith2151996/NAI-Workbench.git nai-workbench
+
+# If it already exists, just pull latest:
+cd nai-workbench && git pull origin main
 ```
 
-**Expected**: `custodian/admin.py` exists.
+**Expected**: `/home/dev/projects/nai-workbench/custodian/admin.py` exists.
 
-### Step 3: Ensure venv exists and has dependencies
+### Step 3: Create venv and install dependencies
 
 ```bash
-# Check if venv exists
-ls custodian/.venv/Scripts/python.exe
+cd /home/dev/projects/nai-workbench
 
-# If it doesn't exist, create it:
-python -m venv custodian/.venv
+# Create venv (Linux paths — bin/ not Scripts/)
+python3 -m venv custodian/.venv
+source custodian/.venv/bin/activate
 
-# Activate
-source custodian/.venv/Scripts/activate
-
-# Install/update dependencies
+# Install dependencies
 pip install -r custodian/requirements.txt
-```
-
-**Expected output** (versions may differ):
-```
-textual >= 8.0.0
-rich (any version)
-mcp >= 1.0.0
-tree-sitter == 0.21.3
-tree-sitter-languages >= 1.10.0
 ```
 
 **Verify imports**:
 ```bash
+source custodian/.venv/bin/activate
 python -c "
 from textual.widgets import DirectoryTree, TextArea, TabbedContent, RichLog
 from textual.app import App
@@ -145,19 +234,16 @@ print('ALL IMPORTS OK')
 
 **Expected**: `ALL IMPORTS OK`
 
-### Step 4: Ensure database is initialized
+### Step 4: Initialize the database
 
 ```bash
-ls custodian/custodian.db
-```
+cd /home/dev/projects/nai-workbench
+source custodian/.venv/bin/activate
 
-If it doesn't exist:
-```bash
+# Init DB (creates tables + seeds projects if DB doesn't exist)
 python custodian/init_db.py
-```
 
-**Verify DB**:
-```bash
+# Verify
 python -c "
 import sqlite3
 conn = sqlite3.connect('custodian/custodian.db')
@@ -192,7 +278,8 @@ npm install -g @anthropic-ai/claude-code
 ### Step 6: Verify admin.py loads without errors
 
 ```bash
-source custodian/.venv/Scripts/activate
+cd /home/dev/projects/nai-workbench
+source custodian/.venv/bin/activate
 python -c "import ast; ast.parse(open('custodian/admin.py').read()); print('SYNTAX OK')"
 ```
 
@@ -201,7 +288,7 @@ python -c "import ast; ast.parse(open('custodian/admin.py').read()); print('SYNT
 ### Step 7: Quick smoke test — launch and quit
 
 ```bash
-source custodian/.venv/Scripts/activate
+source custodian/.venv/bin/activate
 python custodian/admin.py
 ```
 
@@ -216,21 +303,7 @@ Press `q` to quit.
 cat .claude/mcp.json
 ```
 
-**Expected**:
-```json
-{
-  "mcpServers": {
-    "custodian": {
-      "command": "python",
-      "args": ["custodian/mcp_server.py"],
-      "cwd": "C:\\Users\\Big A\\NAI-Workbench",
-      "env": {
-        "PYTHONPATH": "C:\\Users\\Big A\\NAI-Workbench\\custodian"
-      }
-    }
-  }
-}
-```
+**Expected**: JSON with a `custodian` server entry pointing to `custodian/mcp_server.py`.
 
 This makes the Custodian MCP tools available to any Claude Code session running
 from the workbench directory — including the Editor tab's Claude chat.
@@ -246,11 +319,11 @@ from the workbench directory — including the Editor tab's Claude chat.
 3. Set the command to:
 
 ```bash
-ssh BigA-PC 'cd "C:/Users/Big A/NAI-Workbench" && bash bin/admin-session'
+ssh dev@100.95.20.98 -p 2222 'cd /home/dev/projects/nai-workbench && bash bin/admin-session'
 ```
 
 The `bin/admin-session` script automatically:
-- Detects Windows vs Linux venv paths
+- Detects Windows vs Linux venv paths (Scripts/ vs bin/)
 - Activates the venv
 - Creates the DB if missing
 - Launches `python custodian/admin.py`
@@ -272,8 +345,8 @@ bash bin/admin-session
 If you're already in a Claude Code session on the laptop connected to the PC:
 
 ```bash
-cd "C:/Users/Big A/NAI-Workbench"
-source custodian/.venv/Scripts/activate
+cd /home/dev/projects/nai-workbench
+source custodian/.venv/bin/activate
 python custodian/admin.py
 ```
 
@@ -452,7 +525,7 @@ All of these passed on the PC before writing this document:
 | textual 8.0.0 (DirectoryTree, TextArea, all widgets) | OK |
 | rich, mcp, tree_sitter, tree_sitter_languages imports | OK |
 | SQLite DB: 6 tables, 5 indexes, 5 projects, 2 fossils, 151 symbols, 1 prompt | OK |
-| admin.py syntax (1731 lines) | OK |
+| admin.py syntax (1692 lines) | OK |
 | CustodianAdmin class loads, 8 keybindings, 18 editor/Claude methods | OK |
 | EDITOR_SYSTEM_PROMPT: 1335 chars | OK |
 | WorkbenchDirectoryTree: filters 12 dir patterns, 16 file extensions | OK |
