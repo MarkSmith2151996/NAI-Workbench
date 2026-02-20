@@ -404,6 +404,11 @@ DataTable {
 #chat-input {
     width: 1fr;
 }
+
+#clone-path-label {
+    color: $text-muted;
+    padding: 0 0 1 0;
+}
 """
 
 
@@ -446,26 +451,22 @@ class CustodianAdmin(App):
             # ── Projects Tab ─────────────────────────────────
             with TabPane("Projects", id="tab-projects"):
                 with Vertical(classes="tab-content"):
+                    yield Static("Import from GitHub", classes="section-header")
+                    yield Static(
+                        f"Projects clone to: {PROJECTS_DIR}/",
+                        id="clone-path-label",
+                    )
+                    with Horizontal(classes="action-bar"):
+                        yield Button("Fetch My Repos", variant="primary", id="btn-fetch-gh")
+                        yield Button("Import Selected", variant="success", id="btn-clone-gh")
+                    yield DataTable(id="gh-repos-table")
+
                     yield Static("Registered Projects", classes="section-header")
                     yield DataTable(id="projects-table")
 
                     with Horizontal(classes="action-bar"):
                         yield Button("Remove Selected", variant="error", id="btn-remove-project")
                         yield Button("Reactivate", variant="default", id="btn-reactivate-project")
-
-                    yield Static("Import from GitHub", classes="section-header")
-                    with Horizontal(classes="action-bar"):
-                        yield Button("Fetch My Repos", variant="primary", id="btn-fetch-gh")
-                        yield Button("Clone & Register", variant="success", id="btn-clone-gh")
-                    yield DataTable(id="gh-repos-table")
-
-                    yield Static("Register Local Project", classes="section-header")
-                    with Horizontal(classes="input-bar"):
-                        yield Input(placeholder="Path (e.g. /home/dev/projects/myapp)", id="input-local-path", classes="url-input")
-                    with Horizontal(classes="input-bar"):
-                        yield Input(placeholder="Name (auto-detected if blank)", id="input-local-name", classes="name-input")
-                        yield Input(placeholder="Stack (auto-detected)", id="input-local-stack", classes="stack-input")
-                        yield Button("Register", variant="primary", id="btn-register-local")
 
                     yield Static("Log", classes="section-header")
                     yield RichLog(id="project-log", highlight=True, markup=True)
@@ -761,8 +762,6 @@ class CustodianAdmin(App):
             table = self.query_one("#gh-repos-table", DataTable)
             row_idx = table.cursor_row
             self._do_clone_gh_repo(row_idx)
-        elif button_id == "btn-register-local":
-            self._do_register_local()
         elif button_id == "btn-remove-project":
             self._do_remove_project()
         elif button_id == "btn-reactivate-project":
@@ -987,44 +986,6 @@ class CustodianAdmin(App):
         self.call_from_thread(self._refresh_custodian_tab)
 
         self.call_from_thread(self.notify, f"Imported {slug}")
-
-    def _do_register_local(self):
-        """Register a local project path."""
-        log = self.query_one("#project-log", RichLog)
-
-        path_input = self.query_one("#input-local-path", Input)
-        name_input = self.query_one("#input-local-name", Input)
-        stack_input = self.query_one("#input-local-stack", Input)
-
-        path = path_input.value.strip()
-        if not path:
-            log.write("[red]Enter a project path[/red]")
-            return
-
-        if not os.path.isdir(path):
-            log.write(f"[red]Path not found: {path}[/red]")
-            return
-
-        name = name_input.value.strip()
-        if not name:
-            name = slugify(os.path.basename(path))
-
-        stack = stack_input.value.strip()
-        if not stack:
-            stack = detect_stack(path)
-
-        register_project(name, path, stack)
-        log.write(f"[bold green]Registered '{name}' at {path} ({stack or 'no stack detected'})[/bold green]")
-
-        # Clear inputs
-        path_input.value = ""
-        name_input.value = ""
-        stack_input.value = ""
-
-        self._load_projects()
-        self._refresh_projects_tab()
-        self._refresh_custodian_tab()
-        self.notify(f"Registered {name}")
 
     def _do_remove_project(self):
         """Deactivate the selected project."""
