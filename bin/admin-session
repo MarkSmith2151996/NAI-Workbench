@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# ADMIN 01 — Launch the Custodian Admin TUI
+# Widget entry point for Wave Terminal
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
+VENV_DIR="$WORKBENCH_DIR/custodian/.venv"
+
+# Activate venv
+if [ -d "$VENV_DIR/Scripts" ]; then
+    source "$VENV_DIR/Scripts/activate"
+elif [ -d "$VENV_DIR/bin" ]; then
+    source "$VENV_DIR/bin/activate"
+fi
+
+# Ensure DB exists
+if [ ! -f "$WORKBENCH_DIR/custodian/custodian.db" ]; then
+    python "$WORKBENCH_DIR/custodian/init_db.py"
+fi
+
+cd "$WORKBENCH_DIR"
+python custodian/admin.py

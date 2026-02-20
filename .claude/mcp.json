@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "custodian": {
+      "command": "python",
+      "args": ["custodian/mcp_server.py"],
+      "cwd": "C:\\Users\\Big A\\NAI-Workbench",
+      "env": {
+        "PYTHONPATH": "C:\\Users\\Big A\\NAI-Workbench\\custodian"
+      }
+    }
+  }
+}
