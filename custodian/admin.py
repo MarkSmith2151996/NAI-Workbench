@@ -50,30 +50,36 @@ PROJECTS_DIR = os.path.expanduser("~/projects")
 # the fossil system, MCP tools, and registered projects — same architecture
 # as the rest of the custodian system.
 EDITOR_SYSTEM_PROMPT = """\
-You are working inside the NAI Workbench Admin TUI (Editor tab).
-The workbench uses a Custodian system: Sonnet maintains compressed "fossils" \
-(project indexes) in SQLite so you never have to grep for things already mapped.
+You are an on-demand developer embedded in the NAI Workbench Admin TUI. \
+When the user asks you to do something, DO IT — edit files, write code, run \
+commands, fix bugs, add features. You are not a chatbot. You are a developer.
 
-You have access to the Custodian MCP server with these tools:
-- list_projects(): All registered projects with status and last indexed time
-- get_project_fossil(project_name): Architecture, summary, file tree, \
-dependencies, recent changes, known issues
-- lookup_symbol(name, project_name): Find functions/classes by name — runs \
-live tree-sitter on actual source files, always-current line numbers
-- get_symbol_context(name, project_name): Sonnet's semantic description + \
-relationship graph (calls, called_by, depends_on)
-- find_related_files(symbol_name, project_name): What files you'd touch to \
-change a symbol
-- get_recent_changes(project_name): Summarized recent commits
-- get_detective_insights(project_name): Coupling patterns, growth trends, \
-architectural warnings
-- trigger_custodian(project_name): Run Sonnet re-indexing
+WORKFLOW:
+1. Use get_project_fossil(name) FIRST to get architecture context before touching any project
+2. Use lookup_symbol(name, project) to find functions/classes with live line numbers
+3. Read the actual file to see current code
+4. Make your changes with Edit or Write
+5. Run tests or commands with Bash to verify your work
+6. The user's editor auto-reloads when you modify the open file
 
-IMPORTANT: Use get_project_fossil FIRST before exploring any project. It gives \
-you the full architecture map so you don't waste time searching.
+CUSTODIAN MCP TOOLS (query the fossil database — faster than searching):
+- list_projects() — registered projects with status
+- get_project_fossil(project_name) — architecture, file tree, dependencies, summary
+- lookup_symbol(name, project_name) — live tree-sitter search, always-current line numbers
+- get_symbol_context(name, project_name) — Sonnet's descriptions + relationship graph
+- find_related_files(symbol_name, project_name) — files to touch for a change
+- get_recent_changes(project_name) — summarized recent commits
+- get_detective_insights(project_name) — coupling patterns, architectural warnings
+- trigger_custodian(project_name) — re-index a project with Sonnet
 
-You can Read, Edit, Write files and run Bash commands. Make real code changes \
-when asked. After editing, the user's editor auto-reloads.
+STANDARD TOOLS: Read, Edit, Write, Bash, Glob, Grep — all fully available.
+
+RULES:
+- Make real code changes. Do not just describe what to do.
+- If a file is shown in <file> tags, that is the file currently open in the editor.
+- After editing, always verify your changes compile/work.
+- Keep changes minimal and focused — don't refactor things you weren't asked to touch.
+- If you need more context, use the fossil/symbol tools before grepping blindly.
 """
 
 
@@ -349,7 +355,7 @@ DataTable {
 }
 
 #editor-panel {
-    height: 1fr;
+    height: 2fr;
 }
 
 #editor-tree {
@@ -390,7 +396,8 @@ DataTable {
 }
 
 #chat-panel {
-    height: 15;
+    height: 1fr;
+    min-height: 12;
 }
 
 #chat-toolbar {
@@ -1483,15 +1490,17 @@ class CustodianAdmin(App):
         self._save_claude_session(self._claude_session_id)
 
         label = self.query_one("#session-label", Static)
-        label.update(f"Session: {self._claude_session_id[:12]}... (new)")
+        label.update(f"Session: {self._claude_session_id[:12]}... [green]ready[/green]")
 
         chat_log = self.query_one("#claude-chat-log", RichLog)
         chat_log.clear()
-        chat_log.write(f"[bold green]New session: {self._claude_session_id}[/bold green]")
-        chat_log.write("[dim]Claude has full tool access — Read, Edit, Write, Bash, Glob, Grep + Custodian MCP tools.[/dim]")
-        chat_log.write("[dim]It can query fossils (get_project_fossil), look up symbols (lookup_symbol), and edit code.[/dim]")
-        chat_log.write("[dim]The editor auto-reloads when Claude modifies the open file.[/dim]")
-        self.notify("New Claude session created")
+        chat_log.write(f"[bold green]Developer session ready[/bold green] ({self._claude_session_id[:8]})")
+        chat_log.write("")
+        chat_log.write("[bold]Claude is your on-demand developer. Tell it what to build, fix, or change.[/bold]")
+        chat_log.write("[dim]Tools: Read, Edit, Write, Bash, Glob, Grep + Custodian MCP (fossils, symbols, insights)[/dim]")
+        chat_log.write("[dim]Open a file in the tree → Claude sees it as context. Editor auto-reloads after edits.[/dim]")
+        chat_log.write("[dim]Session persists across restarts. Use 'Resume' to continue later.[/dim]")
+        chat_log.write("")
 
     def _do_resume_claude_session(self):
         """Resume a previously saved Claude session."""
@@ -1565,17 +1574,21 @@ class CustodianAdmin(App):
         if not message:
             return
 
-        if not self._claude_session_id:
-            self.notify("Create a session first (click 'New Session')", severity="warning")
-            return
-
         if self._claude_running:
             self.notify("Claude is still running — wait or click Stop", severity="warning")
             return
 
+        # Auto-create session if none exists
+        if not self._claude_session_id:
+            self._do_new_claude_session()
+
         chat_log = self.query_one("#claude-chat-log", RichLog)
         chat_log.write(f"\n[bold cyan]You:[/bold cyan] {message}")
         chat_input.value = ""
+
+        # Show working indicator
+        session_label = self.query_one("#session-label", Static)
+        session_label.update(f"Session: {self._claude_session_id[:12]}... [bold yellow]working...[/bold yellow]")
 
         prompt = self._build_claude_prompt(message)
         self._run_claude_query(prompt)
@@ -1631,12 +1644,32 @@ class CustodianAdmin(App):
             fp = tool_input.get("file_path", tool_input.get("path", ""))
             if fp and tool in ("Edit", "Write", "NotebookEdit"):
                 self._claude_edited_files.add(fp)
+            # Color by operation type
+            if tool in ("Edit", "Write", "NotebookEdit"):
+                color = "bold red"  # write ops in red
+            elif tool in ("Read", "Glob", "Grep"):
+                color = "bold blue"  # read ops in blue
+            elif tool == "Bash":
+                color = "bold yellow"  # shell ops in yellow
+            elif tool.startswith("mcp__"):
+                color = "bold cyan"  # MCP tools in cyan
+                tool = tool.replace("mcp__custodian__", "fossil:")
+            else:
+                color = "bold magenta"
             if fp:
-                return f"\n[bold magenta]>>> {tool}[/bold magenta] {fp}\n"
+                try:
+                    fp = os.path.relpath(fp, self._workbench_path)
+                except ValueError:
+                    pass
+                return f"\n[{color}]>>> {tool}[/{color}] {fp}\n"
             cmd = tool_input.get("command", "")
             if cmd:
-                return f"\n[bold magenta]>>> {tool}[/bold magenta] {cmd[:80]}\n"
-            return f"\n[bold magenta]>>> {tool}[/bold magenta]\n"
+                return f"\n[{color}]>>> {tool}[/{color}] `{cmd[:100]}`\n"
+            # For MCP and other tools, show key params
+            params = ", ".join(f"{k}={v}" for k, v in list(tool_input.items())[:3] if v)
+            if params:
+                return f"\n[{color}]>>> {tool}[/{color}] ({params})\n"
+            return f"\n[{color}]>>> {tool}[/{color}]\n"
 
         # Content block start (tool_use or text)
         if t == "content_block_start":
@@ -1656,13 +1689,18 @@ class CustodianAdmin(App):
                 )
             if isinstance(content, str):
                 content = content.strip()
-                if len(content) > 300:
-                    content = content[:300] + "..."
+                if len(content) > 500:
+                    content = content[:500] + "..."
             if is_error:
-                return f"[red]{content}[/red]\n"
+                return f"[bold red]ERROR:[/bold red] [red]{content}[/red]\n"
             if content:
+                # Show first few lines of output, dimmed
+                lines = content.split("\n")
+                if len(lines) > 8:
+                    preview = "\n".join(lines[:6])
+                    return f"[dim]{preview}\n... ({len(lines)-6} more lines)[/dim]\n"
                 return f"[dim]{content}[/dim]\n"
-            return ""
+            return "[dim]OK[/dim]\n"
 
         return ""
 
@@ -1686,12 +1724,20 @@ class CustodianAdmin(App):
         briefs = self._get_fossil_briefs()
         system_ctx = EDITOR_SYSTEM_PROMPT + f"\nRegistered projects:\n{briefs}\n"
 
+        # Build MCP config path (absolute so it works from any cwd)
+        mcp_config = os.path.join(self._workbench_path, ".claude", "mcp.json")
+
         cmd = [
             "claude", "-p",
             "--output-format", "stream-json",
             "--session-id", self._claude_session_id,
             "--append-system-prompt", system_ctx,
+            "--permission-mode", "acceptEdits",
         ]
+
+        # Pass MCP config explicitly if it exists
+        if os.path.exists(mcp_config):
+            cmd.extend(["--mcp-config", mcp_config])
 
         try:
             proc = subprocess.Popen(
@@ -1788,6 +1834,15 @@ class CustodianAdmin(App):
         finally:
             self._claude_running = False
             self._claude_process = None
+            # Clear "working" indicator
+            try:
+                label = self.query_one("#session-label", Static)
+                self.call_from_thread(
+                    label.update,
+                    f"Session: {self._claude_session_id[:12]}... [green]ready[/green]"
+                )
+            except Exception:
+                pass
 
     def _do_stop_claude(self):
         """Terminate the running Claude process."""

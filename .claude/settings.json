@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Bash",
+      "Glob",
+      "Grep",
+      "mcp__custodian__list_projects",
+      "mcp__custodian__get_project_fossil",
+      "mcp__custodian__lookup_symbol",
+      "mcp__custodian__get_symbol_context",
+      "mcp__custodian__find_related_files",
+      "mcp__custodian__get_recent_changes",
+      "mcp__custodian__get_detective_insights",
+      "mcp__custodian__trigger_custodian"
+    ]
+  }
+}

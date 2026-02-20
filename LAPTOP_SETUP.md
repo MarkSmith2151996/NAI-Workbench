@@ -354,131 +354,135 @@ python custodian/admin.py
 
 ---
 
-## How the Editor Tab Works (Detailed)
+## The Editor Tab — On-Demand Developer
 
-### File Browser (left panel)
-- `WorkbenchDirectoryTree` rooted at the NAI-Workbench directory
-- Filters out: `.git`, `node_modules`, `__pycache__`, `.venv`, `.next`, `dist`,
-  `build`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `egg-info`
-- Also hides: `.db`, `.db-wal`, `.db-shm`, `.pyc`, `.pyo`, `.lock`, images, fonts
+The Editor tab is a full development environment, not a chatbot. Claude Code
+runs as your **on-demand developer** with full tool access. Open a file, tell
+Claude what to do, and it edits the code directly.
 
-### Code Editor (right panel)
-- Textual `TextArea` with line numbers and Monokai theme
-- Language auto-detection by extension:
-  - `.py` → python
-  - `.js`, `.ts`, `.tsx`, `.jsx` → javascript
-  - `.json` → json, `.md` → markdown, `.css` → css
-  - `.html` → html, `.sql` → sql, `.toml` → toml, `.yaml`/`.yml` → yaml
-- **Save** button writes to disk (or auto-saves when switching files)
-- **Reload** button discards edits and re-reads from disk
+### Layout
 
-### Claude Code Chat (bottom panel)
+```
++------- Editor Tab -----------------------------------------------+
+| [file tree]  |  [code editor with syntax highlighting]           |
+|  custodian/  |  editor-file-label        [Save] [Reload]         |
+|   admin.py   |  1  #!/usr/bin/env python3                        |
+|   detective  |  2  """NAI Workbench...                            |
+|   mcp_server |  3                                                 |
+|  bin/        |  ...                                               |
++--------------+----------------------------------------------------+
+| [Commit & Push] [Pull]   git: main — 3 changed files             |
++------------------------------------------------------------------+
+| [New Session] [Resume]   Session: a3f8c2d1... ready              |
+|                                                                   |
+| You: Add error handling to the _do_git_pull method               |
+| Claude:                                                           |
+| >>> Read custodian/admin.py                                       |
+| >>> Edit custodian/admin.py                                       |
+| I've added try/except around the subprocess call...               |
+| Files modified (1): custodian/admin.py                            |
+| Editor auto-reloaded.                                             |
+|                                                                   |
+| [Ask Claude...                               ] [Send] [Stop]     |
++------------------------------------------------------------------+
+```
 
-#### Creating a session
-1. Click **New Session** → generates UUID, saves to `~/.custodian_claude_session`
-2. Chat shows: "Claude has full tool access — Read, Edit, Write, Bash, Glob, Grep + Custodian MCP tools"
+### What Claude Can Do
 
-#### How messages are sent
-When you type a message and press Enter (or click Send):
+Claude runs with `--permission-mode acceptEdits` and has all standard tools plus
+the Custodian MCP tools. Here's what that means in practice:
 
-1. `_build_claude_prompt(message)` constructs the full prompt:
-   - If a file is open: prepends the file content (up to 2000 lines) in `<file>` tags
-   - `_detect_project_for_file()` checks which registered project the file belongs to
-   - Adds a hint: "Use get_project_fossil('project-name') for architecture context"
-   - Appends the user's message
+| Capability | How | Example |
+|-----------|-----|---------|
+| **Read files** | `Read` tool | "What does this function do?" |
+| **Edit files** | `Edit` tool | "Add validation to this method" |
+| **Create files** | `Write` tool | "Create a new test file for this module" |
+| **Run commands** | `Bash` tool | "Run the tests" / "Check git status" |
+| **Search code** | `Glob` + `Grep` tools | "Find all uses of fetchLogs" |
+| **Query fossils** | `get_project_fossil` MCP | "What's the architecture of progress-tracker?" |
+| **Find symbols** | `lookup_symbol` MCP | "Where is the createGoal function?" |
+| **See patterns** | `get_detective_insights` MCP | "What patterns has the detective found?" |
 
-2. `_run_claude_query(prompt)` spawns the Claude CLI:
+### Example Commands
+
+Things you can tell Claude in the Editor tab:
+
+```
+"Fix the bug on line 45"
+"Add a new method that validates user input before saving"
+"Refactor this function to use async/await"
+"Write tests for the git integration methods"
+"What files would I need to change to add a new tab?"
+"Run the linter and fix any issues"
+"Explain how the fossil system works"
+"Add error handling to all the subprocess calls"
+"Create a migration script to add a new column to the projects table"
+```
+
+### How It Works Under the Hood
+
+When you type a message and press Enter:
+
+1. **Context injection**: If a file is open, Claude receives it in `<file>` tags.
+   Project detection tells Claude which registered project the file belongs to.
+
+2. **Claude CLI spawns**:
    ```
    claude -p \
      --output-format stream-json \
      --session-id <UUID> \
-     --append-system-prompt <EDITOR_SYSTEM_PROMPT + fossil briefs>
+     --permission-mode acceptEdits \
+     --mcp-config .claude/mcp.json \
+     --append-system-prompt <developer system prompt + fossil briefs>
    ```
-   - `EDITOR_SYSTEM_PROMPT` (1335 chars) describes all 8 MCP tools
-   - `_get_fossil_briefs()` queries SQLite for one-line summaries of all projects
-   - Working directory = NAI-Workbench root → `.claude/mcp.json` is picked up
-   - Environment cleaned: removes `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT`
 
-3. Claude processes the request with full tool access:
-   - Can call `get_project_fossil`, `lookup_symbol`, etc. via MCP
-   - Can `Read`, `Edit`, `Write` files directly
-   - Can run `Bash` commands
-   - MCP queries are logged to `query_log` table
+3. **Tools are pre-authorized**: `.claude/settings.json` allows Read, Edit, Write,
+   Bash, Glob, Grep, and all 8 Custodian MCP tools without prompting.
 
-4. Response streams as NDJSON back to the chat log:
-   - Text appears line-by-line
-   - Tool calls shown with magenta `>>>` markers (e.g., `>>> Edit custodian/admin.py`)
-   - Tool results shown dimmed
-   - `_extract_text_from_event()` handles all event types:
-     `content_block_delta`, `assistant.text`, `assistant.tool_use`, `tool_result`, `result`
+4. **Response streams in real-time** with color-coded tool calls:
+   - **Red** `>>>` = write operations (Edit, Write)
+   - **Blue** `>>>` = read operations (Read, Glob, Grep)
+   - **Yellow** `>>>` = shell commands (Bash)
+   - **Cyan** `>>>` = MCP/fossil tools (get_project_fossil, lookup_symbol, etc.)
 
-5. After completion:
-   - `_claude_edited_files` set lists all files Claude modified
-   - Summary: "Files modified (N):" with relative paths
-   - If the currently open file was edited → `_reload_current_file()` auto-refreshes
-   - Cost and duration shown if available
+5. **After Claude finishes**:
+   - Modified files listed in green
+   - Editor auto-reloads if the open file was changed
+   - Git status refreshes to show uncommitted changes
+   - Session label shows "ready"
 
-#### Session persistence
-- UUID saved to `~/.custodian_claude_session` (JSON: `{session_id, created_at}`)
-- Claude CLI stores conversation history at `~/.claude/sessions/<UUID>/`
-- Click **Resume** to reload a saved session → Claude remembers previous conversation
+### Session Persistence
+
+- Sessions auto-create on first message (no "New Session" click needed)
+- UUID saved to `~/.custodian_claude_session`
+- Claude remembers the full conversation history across messages
+- Close admin TUI, reopen later, click **Resume** — conversation continues
 - Click **New Session** to start fresh (old session remains on disk)
-- Session survives admin TUI restarts — the UUID is the persistent key
 
-#### Stop button
-- `_do_stop_claude()` calls `proc.terminate()` on the running subprocess
-- Chat shows "[yellow]Stopped.[/yellow]"
+### Git Integration
 
----
+The git toolbar sits between the editor and chat panels:
 
-## How the Fossil Integration Works
+| Button | What it does |
+|--------|-------------|
+| **Commit & Push** | `git add -A` + `git commit` + `git push origin main` |
+| **Pull** | `git pull origin main` (auto-reloads open file if changed) |
+| **Status label** | Shows branch name + number of changed files |
 
-The Editor tab is NOT a standalone thing — it participates in the same custodian
-architecture as all other tabs:
+Git status auto-refreshes after: file saves, Claude edits, commits, pulls.
+
+### Fossil Integration
+
+The Editor tab participates in the same Custodian architecture as all other tabs.
+Claude queries fossils via MCP, those queries get logged, the Detective analyzes
+what Claude needed, refines the custodian prompts, and the next indexing run
+produces better fossils. The cycle reinforces itself:
 
 ```
-                    ┌──────────────────────────────────────┐
-                    │           SQLite (custodian.db)       │
-                    │  projects | fossils | symbols         │
-                    │  detective_insights | query_log       │
-                    │  custodian_prompts                    │
-                    └─────┬──────┬──────┬──────┬───────────┘
-                          │      │      │      │
-         ┌────────────────┘      │      │      └──────────────┐
-         │                       │      │                     │
-         ▼                       ▼      ▼                     ▼
-  ┌─────────────┐     ┌──────────┐  ┌──────────┐   ┌──────────────┐
-  │ Custodian   │     │ Fossils  │  │Detective │   │ Editor Tab   │
-  │ Tab         │     │ Tab      │  │ Tab      │   │              │
-  │ (indexes)   │     │ (views)  │  │(analyzes)│   │ Claude -p    │
-  └──────┬──────┘     └──────────┘  └─────┬────┘   │ + MCP tools  │
-         │                                │        └──────┬───────┘
-         ▼                                │               │
-  ┌──────────────┐                        │               ▼
-  │ Sonnet       │                        │        ┌──────────────┐
-  │ (indexer)    │                        │        │ MCP Server   │
-  │ creates      │                        │        │ (8 tools)    │
-  │ fossils      │                        │        │ logs queries │
-  └──────────────┘                        │        └──────┬───────┘
-                                          │               │
-                                          ▼               │
-                                   ┌──────────────┐       │
-                                   │ Detective    │◄──────┘
-                                   │ reads query  │ (query_log tells detective
-                                   │ log → refines│  what Claude actually needed)
-                                   │ prompts      │
-                                   └──────────────┘
+Editor Claude queries fossil  →  MCP server logs query
+Detective analyzes query log  →  Refines custodian prompt
+Next Sonnet indexing run      →  Better fossil for Claude
 ```
-
-1. **Editor Claude uses MCP** → queries `get_project_fossil`, `lookup_symbol`, etc.
-2. **MCP server logs queries** → writes to `query_log` table
-3. **Detective reads query_log** → sees what Claude asked for, identifies gaps
-4. **Detective refines prompts** → writes improved custodian_prompts
-5. **Next Custodian index** → uses refined prompt → better fossils
-6. **Editor Claude benefits** → next session gets richer fossil data
-
-This is the same feedback loop the rest of the system uses. The Editor tab just
-adds another consumer of fossil data and another source of query_log entries.
 
 ---
 
