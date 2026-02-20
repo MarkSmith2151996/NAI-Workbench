@@ -6,75 +6,72 @@
 
 ---
 
-## How to Update (Pull Latest Changes)
+## How Sync Works
 
-> **Run these commands every time the PC pushes new code.** This is the fastest
-> way to get the laptop in sync — no re-setup needed.
+The WSL path `/home/dev/projects/nai-workbench` is a **symlink** to
+`/mnt/c/Users/Big A/NAI-Workbench` (the Windows checkout). This means:
 
-### Quick Update (90% of the time this is all you need)
+- **PC edits** → instantly visible from the laptop (same physical files)
+- **Laptop edits** (via admin TUI) → instantly visible on the PC
+- **No git push/pull needed** between PC and laptop — they share one checkout
+- **Git push** is only for backing up to GitHub (use the "Commit & Push" button in the Editor tab)
 
-```bash
-# 1. SSH to the PC
-ssh BigA-PC
-
-# 2. Pull latest code in the WSL workbench
-cd /home/dev/projects/nai-workbench
-git pull origin main
-
-# 3. Done — restart the admin TUI if it's running
-#    (just quit with 'q' and re-launch from Wave widget)
+```
+Laptop (Wave Terminal)
+  └── SSH → WSL2 Ubuntu
+        └── /home/dev/projects/nai-workbench (symlink)
+              └── /mnt/c/Users/Big A/NAI-Workbench (actual files)
+                    ├── Same files PC Claude Code edits
+                    └── Git remote → GitHub (backup/versioning)
 ```
 
-### Full Update (after dependency or schema changes)
+### Editor Tab Git Buttons
+
+The Editor tab has two git buttons in the toolbar:
+
+| Button | What it does |
+|--------|-------------|
+| **Commit & Push** | `git add -A` → `git commit` → `git push origin main` (one click) |
+| **Pull** | `git pull origin main` (get changes from GitHub) |
+
+The git status label updates automatically after: file saves, Claude edits, commits, and pulls.
+
+## How to Update (After Dependency/Schema Changes Only)
+
+> Since the symlink means PC and laptop share the same files, you usually don't
+> need to update anything. Only run these if `requirements.txt` or `schema.sql`
+> changed.
 
 ```bash
-# 1. SSH to the PC
-ssh BigA-PC
+# SSH to the PC
+ssh dev@100.95.20.98 -p 2222
 
-# 2. Pull latest
+# Update WSL-native venv
+source ~/.custodian-venv/bin/activate
+pip install -r /home/dev/projects/nai-workbench/custodian/requirements.txt
+
+# Re-init DB (safe — only creates missing tables)
 cd /home/dev/projects/nai-workbench
-git pull origin main
-
-# 3. Update Python dependencies
-source custodian/.venv/bin/activate
-pip install -r custodian/requirements.txt
-
-# 4. Re-init the database (safe — only creates missing tables, won't drop data)
 python custodian/init_db.py
 
-# 5. Verify everything works
-python -c "
-from textual.widgets import DirectoryTree, TextArea, TabbedContent, RichLog
-from textual.app import App
-import mcp, tree_sitter, tree_sitter_languages
-import sqlite3
-conn = sqlite3.connect('custodian/custodian.db')
-tables = [r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()]
-projects = conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0]
-conn.close()
-print(f'Imports OK | Tables: {len(tables)} | Projects: {projects}')
-"
-# Expected: Imports OK | Tables: 6 | Projects: <number>
-
-# 6. Restart the admin TUI
+# Restart the admin TUI
 ```
 
 ### If things go wrong — Nuclear Reset
 
 ```bash
-cd /home/dev/projects/nai-workbench
+# Fix the symlink if broken
+rm -f /home/dev/projects/nai-workbench
+ln -s '/mnt/c/Users/Big A/NAI-Workbench' /home/dev/projects/nai-workbench
 
-# Throw away local changes and match GitHub exactly
-git fetch origin
-git reset --hard origin/main
-
-# Recreate venv from scratch
-rm -rf custodian/.venv
-python3 -m venv custodian/.venv
-source custodian/.venv/bin/activate
-pip install -r custodian/requirements.txt
+# Recreate WSL venv from scratch
+rm -rf ~/.custodian-venv
+python3 -m venv ~/.custodian-venv
+source ~/.custodian-venv/bin/activate
+pip install -r /home/dev/projects/nai-workbench/custodian/requirements.txt
 
 # Recreate database
+cd /home/dev/projects/nai-workbench
 rm -f custodian/custodian.db custodian/custodian.db-wal custodian/custodian.db-shm
 python custodian/init_db.py
 
@@ -85,13 +82,14 @@ python custodian/admin.py  # press 'q' to quit
 
 ### Where code lives
 
-| Location | What | Updated by |
-|----------|------|------------|
-| `C:\Users\Big A\NAI-Workbench` | Windows checkout (where PC Claude Code works) | PC Claude Code |
-| `/home/dev/projects/nai-workbench` | WSL checkout (where admin TUI runs) | `git pull origin main` |
-| GitHub `main` branch | Source of truth | PC pushes here |
+| Location | What | Notes |
+|----------|------|-------|
+| `C:\Users\Big A\NAI-Workbench` | Windows checkout (actual files) | PC Claude Code edits here |
+| `/home/dev/projects/nai-workbench` | WSL symlink → same files | Laptop admin TUI runs here |
+| `~/.custodian-venv` | WSL-native Python venv | Separate from Windows .venv |
+| GitHub `main` branch | Backup/versioning | "Commit & Push" button in Editor tab |
 
-**Flow**: PC Claude Code edits Windows checkout → commits & pushes to GitHub → laptop runs `git pull` in WSL → restart admin TUI.
+**Flow**: Both PC and laptop edit the same files (via symlink). "Commit & Push" backs up to GitHub.
 
 ---
 
@@ -109,15 +107,16 @@ the laptop connects via Tailscale/SSH and edits the same files in real-time.
 Laptop (Wave Terminal)
   └── SSH via Tailscale → PC (Windows 11)
         └── bash bin/admin-session
-              └── python custodian/admin.py   ← Textual TUI, 1692 lines
+              └── python custodian/admin.py   ← Textual TUI, 1826 lines
                     ├── [Projects]   Import from GitHub (clones to ~/projects/)
                     ├── [Custodian]  Index projects via Sonnet
                     ├── [Fossils]    Browse fossil history + details
                     ├── [Detective]  Pattern analysis (Sonnet/Opus)
                     ├── [Status]     DB stats, MCP query log
-                    └── [Editor]     ← THE NEW TAB
+                    └── [Editor]     ← FILE EDITOR + CLAUDE CODE + GIT
                           ├── WorkbenchDirectoryTree (file browser, left 30 cols)
                           ├── TextArea (code editor, syntax highlighting, right)
+                          ├── Git toolbar: [Commit & Push] [Pull] + status label
                           └── Claude Code chat (bottom panel)
                                 ├── claude -p --session-id UUID --append-system-prompt ...
                                 ├── Full tools: Read, Edit, Write, Bash, Glob, Grep
@@ -199,31 +198,34 @@ ssh BigA-PC
 ```bash
 cd /home/dev/projects
 
-# If nai-workbench doesn't exist yet:
-git clone https://github.com/MarkSmith2151996/NAI-Workbench.git nai-workbench
+# Create symlink to the Windows checkout (NOT a separate clone!)
+# This makes PC and laptop edits instant — same physical files.
+ln -s '/mnt/c/Users/Big A/NAI-Workbench' nai-workbench
 
-# If it already exists, just pull latest:
-cd nai-workbench && git pull origin main
+# Verify the symlink works
+ls nai-workbench/custodian/admin.py
 ```
 
-**Expected**: `/home/dev/projects/nai-workbench/custodian/admin.py` exists.
+**Expected**: File exists at the symlink target.
 
-### Step 3: Create venv and install dependencies
+> **Why a symlink instead of a clone?** With a symlink, both PC Claude Code
+> and the laptop admin TUI edit the same files. No git push/pull needed
+> to sync between them.
+
+### Step 3: Create WSL-native venv
+
+The Windows `.venv` (with `Scripts/`) won't work in WSL. Create a separate
+WSL-native venv at `~/.custodian-venv`:
 
 ```bash
-cd /home/dev/projects/nai-workbench
-
-# Create venv (Linux paths — bin/ not Scripts/)
-python3 -m venv custodian/.venv
-source custodian/.venv/bin/activate
-
-# Install dependencies
-pip install -r custodian/requirements.txt
+python3 -m venv ~/.custodian-venv
+source ~/.custodian-venv/bin/activate
+pip install -r /home/dev/projects/nai-workbench/custodian/requirements.txt
 ```
 
 **Verify imports**:
 ```bash
-source custodian/.venv/bin/activate
+source ~/.custodian-venv/bin/activate
 python -c "
 from textual.widgets import DirectoryTree, TextArea, TabbedContent, RichLog
 from textual.app import App
@@ -238,7 +240,7 @@ print('ALL IMPORTS OK')
 
 ```bash
 cd /home/dev/projects/nai-workbench
-source custodian/.venv/bin/activate
+source ~/.custodian-venv/bin/activate
 
 # Init DB (creates tables + seeds projects if DB doesn't exist)
 python custodian/init_db.py
@@ -279,7 +281,7 @@ npm install -g @anthropic-ai/claude-code
 
 ```bash
 cd /home/dev/projects/nai-workbench
-source custodian/.venv/bin/activate
+source ~/.custodian-venv/bin/activate
 python -c "import ast; ast.parse(open('custodian/admin.py').read()); print('SYNTAX OK')"
 ```
 
@@ -288,7 +290,7 @@ python -c "import ast; ast.parse(open('custodian/admin.py').read()); print('SYNT
 ### Step 7: Quick smoke test — launch and quit
 
 ```bash
-source custodian/.venv/bin/activate
+source ~/.custodian-venv/bin/activate
 python custodian/admin.py
 ```
 
@@ -346,7 +348,7 @@ If you're already in a Claude Code session on the laptop connected to the PC:
 
 ```bash
 cd /home/dev/projects/nai-workbench
-source custodian/.venv/bin/activate
+source ~/.custodian-venv/bin/activate
 python custodian/admin.py
 ```
 
@@ -500,11 +502,13 @@ adds another consumer of fossil data and another source of query_log entries.
 
 | Problem | Diagnosis | Fix |
 |---------|-----------|-----|
-| `ModuleNotFoundError: textual` | Venv not activated or deps missing | `source custodian/.venv/Scripts/activate && pip install -r custodian/requirements.txt` |
+| `ModuleNotFoundError: textual` | WSL venv not activated | `source ~/.custodian-venv/bin/activate && pip install -r custodian/requirements.txt` |
 | `ModuleNotFoundError: mcp` | Same | Same |
+| `python: command not found` (WSL) | Using Windows .venv from WSL | Use `~/.custodian-venv` not `custodian/.venv` |
+| Symlink broken | `/home/dev/projects/nai-workbench` doesn't resolve | `ln -s '/mnt/c/Users/Big A/NAI-Workbench' /home/dev/projects/nai-workbench` |
 | `claude: command not found` | Claude Code CLI not installed | `npm install -g @anthropic-ai/claude-code` |
 | DB errors / "no such table" | DB not initialized or corrupted | Delete `custodian/custodian.db` then `python custodian/init_db.py` |
-| Editor tree shows nothing | `_workbench_path` wrong | Verify `admin.py` is at `custodian/admin.py` inside the workbench root |
+| Editor tree shows nothing | `_workbench_path` wrong | Verify symlink resolves: `ls /home/dev/projects/nai-workbench/custodian/` |
 | Claude says "Create a session first" | No session created | Click "New Session" button |
 | Claude doesn't use MCP tools | `.claude/mcp.json` missing or wrong cwd | Verify `.claude/mcp.json` exists in workbench root |
 | Claude can't edit files | Permissions or pipe mode issue | Test: `echo "edit a test file" \| claude -p` from workbench dir |
@@ -512,6 +516,7 @@ adds another consumer of fossil data and another source of query_log entries.
 | TUI crashes on launch | Python version or textual version | Need Python 3.10+ and textual >= 0.50.0 |
 | tree-sitter FutureWarning | Benign deprecation warning | Ignore — does not affect functionality |
 | `--append-system-prompt` flag unknown | Older Claude CLI version | Update: `npm update -g @anthropic-ai/claude-code` |
+| Commit & Push fails | Git auth issue from WSL | Configure git credential helper: `git config credential.helper '/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe'` |
 
 ---
 
@@ -525,7 +530,7 @@ All of these passed on the PC before writing this document:
 | textual 8.0.0 (DirectoryTree, TextArea, all widgets) | OK |
 | rich, mcp, tree_sitter, tree_sitter_languages imports | OK |
 | SQLite DB: 6 tables, 5 indexes, 5 projects, 2 fossils, 151 symbols, 1 prompt | OK |
-| admin.py syntax (1692 lines) | OK |
+| admin.py syntax (1826 lines) | OK |
 | CustodianAdmin class loads, 8 keybindings, 18 editor/Claude methods | OK |
 | EDITOR_SYSTEM_PROMPT: 1335 chars | OK |
 | WorkbenchDirectoryTree: filters 12 dir patterns, 16 file extensions | OK |

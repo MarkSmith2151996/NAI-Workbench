@@ -376,9 +376,21 @@ DataTable {
     border: solid $primary;
 }
 
+#git-toolbar {
+    height: 3;
+    padding: 0 1;
+    border-top: solid $accent;
+    border-bottom: solid $accent;
+}
+
+#git-status-label {
+    width: 1fr;
+    padding: 1;
+    color: $text-muted;
+}
+
 #chat-panel {
     height: 15;
-    border-top: solid $accent;
 }
 
 #chat-toolbar {
@@ -554,6 +566,10 @@ class CustodianAdmin(App):
                                 show_line_numbers=True,
                                 theme="monokai",
                             )
+                    with Horizontal(id="git-toolbar"):
+                        yield Button("Commit & Push", variant="warning", id="btn-git-push")
+                        yield Button("Pull", variant="default", id="btn-git-pull")
+                        yield Static("git: checking...", id="git-status-label")
                     with Vertical(id="chat-panel"):
                         with Horizontal(id="chat-toolbar"):
                             yield Button("New Session", variant="primary", id="btn-claude-new-session")
@@ -778,7 +794,12 @@ class CustodianAdmin(App):
             self._do_detective("opus")
         elif button_id == "btn-refine-prompt":
             self._do_refine_prompt()
-        # Editor tab
+        # Editor tab — git
+        elif button_id == "btn-git-push":
+            self._do_git_commit_push()
+        elif button_id == "btn-git-pull":
+            self._do_git_pull()
+        # Editor tab — file
         elif button_id == "btn-editor-save":
             self._save_current_file()
         elif button_id == "btn-editor-reload":
@@ -1216,6 +1237,115 @@ class CustodianAdmin(App):
             label.update(f"Session: {self._claude_session_id[:12]}... (saved)")
         else:
             label.update("No session")
+        self._refresh_git_status()
+
+    # ── Git Integration ──────────────────────────────────────────────
+
+    def _refresh_git_status(self):
+        """Update the git status label in the Editor tab."""
+        label = self.query_one("#git-status-label", Static)
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True,
+                cwd=self._workbench_path, timeout=10,
+            )
+            lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+            if not lines:
+                branch = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    capture_output=True, text=True,
+                    cwd=self._workbench_path, timeout=5,
+                ).stdout.strip()
+                label.update(f"git: {branch} — clean")
+            else:
+                label.update(f"git: {len(lines)} changed file{'s' if len(lines) != 1 else ''}")
+        except Exception as e:
+            label.update(f"git: error ({e})")
+
+    @work(thread=True)
+    def _do_git_commit_push(self):
+        """Stage all changes, commit with timestamp, push to origin main."""
+        label = self.query_one("#git-status-label", Static)
+        chat = self.query_one("#claude-chat-log", RichLog)
+
+        # Check for changes
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True,
+            cwd=self._workbench_path, timeout=10,
+        )
+        changed = [l for l in result.stdout.strip().split("\n") if l.strip()]
+        if not changed:
+            self.call_from_thread(self.notify, "Nothing to commit — working tree clean", severity="warning")
+            return
+
+        label.update("git: staging...")
+        chat.write(f"[bold cyan]Git:[/] Staging {len(changed)} file(s)...")
+
+        # Stage all
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=self._workbench_path, timeout=30,
+        )
+
+        # Commit
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        msg = f"Admin TUI sync — {timestamp}"
+        label.update("git: committing...")
+        result = subprocess.run(
+            ["git", "commit", "-m", msg],
+            capture_output=True, text=True,
+            cwd=self._workbench_path, timeout=30,
+        )
+        if result.returncode != 0:
+            chat.write(f"[red]Git commit failed:[/] {result.stderr.strip()}")
+            self._refresh_git_status()
+            return
+
+        chat.write(f"[bold cyan]Git:[/] Committed: {msg}")
+
+        # Push
+        label.update("git: pushing...")
+        result = subprocess.run(
+            ["git", "push", "origin", "main"],
+            capture_output=True, text=True,
+            cwd=self._workbench_path, timeout=60,
+        )
+        if result.returncode != 0:
+            chat.write(f"[red]Git push failed:[/] {result.stderr.strip()}")
+        else:
+            chat.write("[bold green]Git:[/] Pushed to origin/main")
+
+        self.call_from_thread(self._refresh_git_status)
+
+    @work(thread=True)
+    def _do_git_pull(self):
+        """Pull latest from origin main."""
+        label = self.query_one("#git-status-label", Static)
+        chat = self.query_one("#claude-chat-log", RichLog)
+
+        label.update("git: pulling...")
+        chat.write("[bold cyan]Git:[/] Pulling from origin/main...")
+
+        result = subprocess.run(
+            ["git", "pull", "origin", "main"],
+            capture_output=True, text=True,
+            cwd=self._workbench_path, timeout=60,
+        )
+        if result.returncode != 0:
+            chat.write(f"[red]Git pull failed:[/] {result.stderr.strip()}")
+        else:
+            output = result.stdout.strip()
+            if "Already up to date" in output:
+                chat.write("[bold cyan]Git:[/] Already up to date")
+            else:
+                chat.write(f"[bold green]Git:[/] {output}")
+                # Reload current file if it was updated
+                if self._editor_current_file:
+                    self.call_from_thread(self._reload_current_file)
+
+        self.call_from_thread(self._refresh_git_status)
 
     def _get_language_for_file(self, filepath):
         """Map file extension to TextArea language name."""
@@ -1280,6 +1410,7 @@ class CustodianAdmin(App):
                 f.write(content)
             self._editor_modified = False
             self.notify(f"Saved {os.path.basename(self._editor_current_file)}")
+            self._refresh_git_status()
         except OSError as e:
             self.notify(f"Save failed: {e}", severity="error")
 
@@ -1646,6 +1777,9 @@ class CustodianAdmin(App):
                             self.call_from_thread(self._reload_current_file)
                             chat_log.write("[bold green]Editor auto-reloaded.[/bold green]")
                             break
+
+                # Refresh git status since files changed
+                self.call_from_thread(self._refresh_git_status)
 
         except FileNotFoundError:
             chat_log.write("[red]Claude CLI not found. Is 'claude' on PATH?[/red]")

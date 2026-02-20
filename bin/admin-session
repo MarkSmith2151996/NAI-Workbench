@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # ADMIN 01 — Launch the Custodian Admin TUI
 # Widget entry point for Wave Terminal
+# Works on both Windows (Git Bash) and WSL (via SSH from laptop)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
-VENV_DIR="$WORKBENCH_DIR/custodian/.venv"
 
-# Activate venv
-if [ -d "$VENV_DIR/Scripts" ]; then
-    source "$VENV_DIR/Scripts/activate"
-elif [ -d "$VENV_DIR/bin" ]; then
-    source "$VENV_DIR/bin/activate"
+# Activate venv — Windows venv (Scripts/) or WSL-native venv
+WSL_VENV="$HOME/.custodian-venv"
+LOCAL_VENV="$WORKBENCH_DIR/custodian/.venv"
+
+if [ -d "$LOCAL_VENV/Scripts" ]; then
+    # Windows Git Bash
+    source "$LOCAL_VENV/Scripts/activate"
+elif [ -d "$WSL_VENV/bin" ]; then
+    # WSL — use the native venv (Windows .venv/Scripts won't work in WSL)
+    source "$WSL_VENV/bin/activate"
+elif [ -d "$LOCAL_VENV/bin" ]; then
+    # Linux native venv inside the repo
+    source "$LOCAL_VENV/bin/activate"
 fi
 
 # Ensure DB exists
