@@ -11,6 +11,14 @@
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/dev/projects"]
+    },
+    "custodian": {
+      "command": "python",
+      "args": ["custodian/mcp_server.py"],
+      "cwd": "C:\\Users\\Big A\\NAI-Workbench",
+      "env": {
+        "PYTHONPATH": "C:\\Users\\Big A\\NAI-Workbench\\custodian"
+      }
     }
   }
 }

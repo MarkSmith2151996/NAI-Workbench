@@ -2,10 +2,24 @@
 config/penpot/compose.env
 config/komodo/compose.env
 
+# Database
+custodian/custodian.db
+custodian/custodian.db-wal
+custodian/custodian.db-shm
+
+# Virtual environment
+custodian/.venv/
+dashboard/.venv/
+.venv/
+
 # Python
 __pycache__/
 *.pyc
-dashboard/.venv/
+*.pyo
+
+# Temp files
+/tmp/
+*.tmp
 
 # OS
 .DS_Store

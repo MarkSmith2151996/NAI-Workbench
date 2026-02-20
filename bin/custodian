@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Custodian CLI — Entry point for indexing and admin
+#
+# Usage:
+#   custodian index <project>     — Index a project (runs Sonnet)
+#   custodian index --all         — Index all active projects
+#   custodian admin               — Launch admin TUI
+#   custodian status              — Show project status
+#   custodian mcp                 — Start MCP server
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CUSTODIAN_DIR="$(dirname "$SCRIPT_DIR")/custodian"
+VENV_DIR="$CUSTODIAN_DIR/.venv"
+# Reference file for Python to resolve the real Windows path
+INIT_DB="$CUSTODIAN_DIR/init_db.py"
+
+# Activate venv if it exists
+if [ -d "$VENV_DIR" ]; then
+    source "$VENV_DIR/Scripts/activate" 2>/dev/null || source "$VENV_DIR/bin/activate" 2>/dev/null || true
+fi
+
+# Check DB exists
+if [ ! -f "$CUSTODIAN_DIR/custodian.db" ]; then
+    echo "Database not initialized. Running setup..."
+    python "$INIT_DB"
+fi
+
+# Helper: run a Python snippet that needs DB access.
+# Passes init_db.py path as sys.argv[1] so Python resolves the real OS path.
+run_db_py() {
+    python -c "
+import sqlite3, os, sys
+_db = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), 'custodian.db')
+_conn = sqlite3.connect(_db)
+_conn.row_factory = sqlite3.Row
+$1
+_conn.close()
+" "$INIT_DB" "${@:2}"
+}
+
+COMMAND="${1:-help}"
+
+case "$COMMAND" in
+    index)
+        shift
+        TARGET="${1:---help}"
+
+        if [ "$TARGET" = "--all" ]; then
+            echo "Indexing all active projects..."
+            run_db_py "
+rows = _conn.execute('SELECT name, path FROM projects WHERE status = ?', ('active',)).fetchall()
+for name, path in rows:
+    print(f'{name}|{path}')
+" | while IFS='|' read -r name path; do
+                echo "=== Indexing $name ==="
+                bash "$CUSTODIAN_DIR/index_project.sh" "$name" "$path" || {
+                    echo "Warning: Failed to index $name, continuing..."
+                }
+                echo ""
+            done
+        elif [ "$TARGET" = "--help" ] || [ "$TARGET" = "-h" ]; then
+            echo "Usage: custodian index <project-name> | --all"
+            echo ""
+            echo "Available projects:"
+            run_db_py "
+rows = _conn.execute('SELECT name, path, last_indexed FROM projects WHERE status = ?', ('active',)).fetchall()
+for name, path, indexed in rows:
+    status = indexed or 'never'
+    print(f'  {name:25s} {path:50s} (last: {status})')
+"
+        else
+            # Get project path from DB
+            PROJECT_PATH=$(run_db_py "
+row = _conn.execute('SELECT path FROM projects WHERE name = ? OR LOWER(name) = LOWER(?)', (sys.argv[2], sys.argv[2])).fetchone()
+print(row[0] if row else '')
+" "$TARGET" 2>/dev/null)
+
+            if [ -z "$PROJECT_PATH" ]; then
+                echo "Error: Project '$TARGET' not found. Use 'custodian index --help' to see available projects."
+                exit 1
+            fi
+
+            bash "$CUSTODIAN_DIR/index_project.sh" "$TARGET" "$PROJECT_PATH"
+        fi
+        ;;
+
+    admin)
+        python "$CUSTODIAN_DIR/admin.py"
+        ;;
+
+    mcp)
+        python "$CUSTODIAN_DIR/mcp_server.py"
+        ;;
+
+    status)
+        run_db_py "
+print('=== Custodian Status ===')
+print()
+
+print('Projects:')
+rows = _conn.execute('''
+    SELECT p.name, p.status, p.last_indexed, COUNT(f.id) as fossils,
+           (SELECT COUNT(*) FROM symbols s WHERE s.project_id = p.id) as symbols
+    FROM projects p
+    LEFT JOIN fossils f ON f.project_id = p.id
+    GROUP BY p.id
+    ORDER BY p.name
+''').fetchall()
+for r in rows:
+    indexed = r['last_indexed'] or 'never'
+    print(f\"  {r['name']:25s} {r['status']:8s} fossils={r['fossils']:3d}  symbols={r['symbols']:5d}  last={indexed}\")
+
+total_fossils = _conn.execute('SELECT COUNT(*) FROM fossils').fetchone()[0]
+total_symbols = _conn.execute('SELECT COUNT(*) FROM symbols').fetchone()[0]
+total_insights = _conn.execute('SELECT COUNT(*) FROM detective_insights').fetchone()[0]
+total_queries = _conn.execute('SELECT COUNT(*) FROM query_log').fetchone()[0]
+db_size = os.path.getsize(_db)
+print()
+print(f'Database: {db_size/1024:.1f} KB')
+print(f'Fossils: {total_fossils}  Symbols: {total_symbols}  Insights: {total_insights}  Queries logged: {total_queries}')
+"
+        ;;
+
+    help|--help|-h)
+        echo "Custodian — Project fossil management for NAI Workbench"
+        echo ""
+        echo "Commands:"
+        echo "  index <project>  Index a project (runs Sonnet analysis)"
+        echo "  index --all      Index all active projects"
+        echo "  admin            Launch admin TUI"
+        echo "  mcp              Start MCP server (stdio)"
+        echo "  status           Show project and database status"
+        echo ""
+        ;;
+
+    *)
+        echo "Unknown command: $COMMAND"
+        echo "Run 'custodian help' for usage."
+        exit 1
+        ;;
+esac
