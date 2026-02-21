@@ -6,19 +6,25 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Activate venv — Windows venv (Scripts/) or WSL-native venv
+# Activate venv — detect platform first
+# On WSL/Linux the Windows .venv/Scripts won't work, use ~/.custodian-venv
 WSL_VENV="$HOME/.custodian-venv"
 LOCAL_VENV="$WORKBENCH_DIR/custodian/.venv"
 
-if [ -d "$LOCAL_VENV/Scripts" ]; then
-    # Windows Git Bash
-    source "$LOCAL_VENV/Scripts/activate"
-elif [ -d "$WSL_VENV/bin" ]; then
-    # WSL — use the native venv (Windows .venv/Scripts won't work in WSL)
-    source "$WSL_VENV/bin/activate"
-elif [ -d "$LOCAL_VENV/bin" ]; then
-    # Linux native venv inside the repo
-    source "$LOCAL_VENV/bin/activate"
+if uname -s 2>/dev/null | grep -qi linux; then
+    # WSL or native Linux — use the WSL-native venv
+    if [ -d "$WSL_VENV/bin" ]; then
+        source "$WSL_VENV/bin/activate"
+    elif [ -d "$LOCAL_VENV/bin" ]; then
+        source "$LOCAL_VENV/bin/activate"
+    fi
+else
+    # Windows (Git Bash / MSYS)
+    if [ -d "$LOCAL_VENV/Scripts" ]; then
+        source "$LOCAL_VENV/Scripts/activate"
+    elif [ -d "$LOCAL_VENV/bin" ]; then
+        source "$LOCAL_VENV/bin/activate"
+    fi
 fi
 
 # Ensure DB exists
