@@ -107,7 +107,7 @@ the laptop connects via Tailscale/SSH and edits the same files in real-time.
 Laptop (Wave Terminal)
   └── SSH via Tailscale → PC (Windows 11)
         └── bash bin/admin-session
-              └── python custodian/admin.py   ← Textual TUI, 1826 lines
+              └── python custodian/admin.py   ← Textual TUI, 1881 lines
                     ├── [Projects]   Import from GitHub (clones to ~/projects/)
                     ├── [Custodian]  Index projects via Sonnet
                     ├── [Fossils]    Browse fossil history + details
@@ -129,7 +129,9 @@ Laptop (Wave Terminal)
 
 ```
 C:\Users\Big A\NAI-Workbench\
-├── .claude/mcp.json                    # MCP server config for Claude Code (13 lines)
+├── .claude/
+│   ├── mcp.json                        # MCP server config (custodian server)
+│   └── settings.json                   # Tool permissions (14 tools pre-authorized)
 ├── .gitignore                          # Ignores DB, venv, pycache (22 lines)
 ├── LAPTOP_SETUP.md                     # This file
 ├── config/mcp.json                     # Alternative MCP config (13 lines)
@@ -137,7 +139,7 @@ C:\Users\Big A\NAI-Workbench\
 │   ├── admin-session                   # Widget entry point — activates venv + runs admin.py (22 lines)
 │   └── custodian                       # CLI: index, admin, mcp, status, help (143 lines)
 └── custodian/
-    ├── admin.py                        # Textual TUI — 6 tabs, 1692 lines
+    ├── admin.py                        # Textual TUI — 6 tabs, 1881 lines
     ├── mcp_server.py                   # MCP server — 8 tools, 573 lines
     ├── detective.py                    # Pattern analysis + prompt evolution, 383 lines
     ├── parse_symbols.py                # tree-sitter symbol extraction, 307 lines
@@ -182,6 +184,17 @@ paths — they'll be replaced as you re-import from GitHub.
 
 > After first-time setup, see **"How to Update"** at the top of this doc.
 
+### Prerequisites (must already exist on the PC)
+
+- WSL2 Ubuntu 24.04 installed and running
+- Python 3.10+ available in WSL (`python3 --version`)
+- Node.js + npm in WSL (for Claude CLI install)
+- Tailscale running on both PC and laptop
+- sshd running in WSL on port 2223 (`sudo /usr/sbin/sshd -p 2223`)
+- netsh port proxy: `0.0.0.0:2222` → `127.0.0.1:2223`
+- The Windows checkout exists at `C:\Users\Big A\NAI-Workbench`
+- `/home/dev/projects/` directory exists in WSL
+
 ### Step 1: SSH to PC from laptop
 
 ```bash
@@ -193,7 +206,7 @@ ssh BigA-PC
 
 **Expected**: You get a bash shell on WSL2 Ubuntu as `dev`.
 
-### Step 2: Clone the repo (or verify it exists)
+### Step 2: Create symlink to Windows checkout
 
 ```bash
 cd /home/dev/projects
@@ -513,7 +526,7 @@ Next Sonnet indexing run      →  Better fossil for Claude
 | `claude: command not found` | Claude Code CLI not installed | `npm install -g @anthropic-ai/claude-code` |
 | DB errors / "no such table" | DB not initialized or corrupted | Delete `custodian/custodian.db` then `python custodian/init_db.py` |
 | Editor tree shows nothing | `_workbench_path` wrong | Verify symlink resolves: `ls /home/dev/projects/nai-workbench/custodian/` |
-| Claude says "Create a session first" | No session created | Click "New Session" button |
+| Claude not responding to messages | Session not created | Sessions auto-create on first message; if broken, click "New Session" |
 | Claude doesn't use MCP tools | `.claude/mcp.json` missing or wrong cwd | Verify `.claude/mcp.json` exists in workbench root |
 | Claude can't edit files | Permissions or pipe mode issue | Test: `echo "edit a test file" \| claude -p` from workbench dir |
 | Session won't resume | Session file corrupted | Delete `~/.custodian_claude_session`, create new session |
@@ -534,9 +547,10 @@ All of these passed on the PC before writing this document:
 | textual 8.0.0 (DirectoryTree, TextArea, all widgets) | OK |
 | rich, mcp, tree_sitter, tree_sitter_languages imports | OK |
 | SQLite DB: 6 tables, 5 indexes, 5 projects, 2 fossils, 151 symbols, 1 prompt | OK |
-| admin.py syntax (1826 lines) | OK |
+| admin.py syntax (1881 lines) | OK |
 | CustodianAdmin class loads, 8 keybindings, 18 editor/Claude methods | OK |
-| EDITOR_SYSTEM_PROMPT: 1335 chars | OK |
+| EDITOR_SYSTEM_PROMPT: 1750 chars (on-demand developer prompt) | OK |
+| `.claude/settings.json`: 14 pre-authorized tools | OK |
 | WorkbenchDirectoryTree: filters 12 dir patterns, 16 file extensions | OK |
 | `_get_fossil_briefs()`: queries DB, returns summaries for all 5 projects | OK |
 | `_detect_project_for_file()`: correctly maps files to all 5 projects | OK |
