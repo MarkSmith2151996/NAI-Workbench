@@ -35,9 +35,22 @@ if [ ! -d "$PROJECT_PATH" ]; then
     exit 1
 fi
 
-# Activate venv if it exists
-if [ -d "$VENV_DIR" ]; then
-    source "$VENV_DIR/Scripts/activate" 2>/dev/null || source "$VENV_DIR/bin/activate" 2>/dev/null || true
+# Activate venv — detect platform first (same pattern as bin/admin-session)
+WSL_VENV="$HOME/.custodian-venv"
+if uname -s 2>/dev/null | grep -qi linux; then
+    # WSL or native Linux — prefer the WSL-native venv
+    if [ -d "$WSL_VENV/bin" ]; then
+        source "$WSL_VENV/bin/activate"
+    elif [ -d "$VENV_DIR/bin" ]; then
+        source "$VENV_DIR/bin/activate"
+    fi
+else
+    # Windows (Git Bash / MSYS)
+    if [ -d "$VENV_DIR/Scripts" ]; then
+        source "$VENV_DIR/Scripts/activate"
+    elif [ -d "$VENV_DIR/bin" ]; then
+        source "$VENV_DIR/bin/activate"
+    fi
 fi
 
 mkdir -p "$TEMP_DIR"

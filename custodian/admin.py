@@ -1388,9 +1388,10 @@ class CustodianAdmin(App):
 
         textarea.load_text(content)
         lang = self._get_language_for_file(filepath)
-        if lang:
+        try:
             textarea.language = lang
-        else:
+        except Exception:
+            # Some languages not available when tree-sitter overrides Textual builtins
             textarea.language = None
 
         self._editor_current_file = filepath
