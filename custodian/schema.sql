@@ -92,7 +92,10 @@ CREATE TABLE IF NOT EXISTS sandbox_state (
     pid INTEGER,
     port INTEGER,
     status TEXT DEFAULT 'stopped',
-    log_path TEXT
+    log_path TEXT,
+    preview_type TEXT,     -- 'web' or 'terminal'
+    tmux_session TEXT,     -- tmux session name for terminal apps
+    preview_url TEXT       -- URL where the preview is accessible (ttyd or direct)
 );
 
 CREATE INDEX IF NOT EXISTS idx_editor_sessions_project ON editor_sessions(project_id, status);

@@ -13,6 +13,7 @@
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -492,6 +493,17 @@ DataTable {
     border: double $accent;
     background: $surface-lighten-1;
 }
+
+#sandbox-log {
+    height: 12;
+    border: solid $primary;
+    margin-top: 1;
+}
+
+#sandbox-status-label {
+    padding: 1;
+    color: $text;
+}
 """
 
 
@@ -642,6 +654,20 @@ class CustodianAdmin(App):
                     yield Static("Recent MCP Queries", classes="section-header")
                     yield DataTable(id="query-log-table")
 
+                    yield Static("Sandbox", classes="section-header")
+                    with Horizontal(classes="action-bar"):
+                        yield Select(
+                            [],
+                            prompt="Select project...",
+                            id="sandbox-project-select",
+                            classes="project-selector",
+                        )
+                        yield Button("Start", variant="success", id="btn-sandbox-start")
+                        yield Button("Stop", variant="error", id="btn-sandbox-stop")
+                        yield Button("Open Preview", variant="primary", id="btn-sandbox-preview")
+                    yield Static("No sandbox running", id="sandbox-status-label")
+                    yield RichLog(id="sandbox-log", highlight=True, markup=True)
+
             # ── Editor Tab ────────────────────────────────────
             with TabPane("Editor", id="tab-editor"):
                 with Vertical(classes="tab-content"):
@@ -709,7 +735,7 @@ class CustodianAdmin(App):
         self._projects = get_projects()
         options = [(p["name"], p["id"]) for p in self._projects]
 
-        for select_id in ["custodian-project-select", "fossil-project-select", "detective-project-select", "editor-project-select"]:
+        for select_id in ["custodian-project-select", "fossil-project-select", "detective-project-select", "editor-project-select", "sandbox-project-select"]:
             try:
                 select = self.query_one(f"#{select_id}", Select)
                 select.set_options(options)
@@ -1062,6 +1088,30 @@ class CustodianAdmin(App):
                 q["timestamp"] or "",
                 (q["query_params"] or "")[:60],
             )
+
+        # Refresh sandbox status
+        try:
+            sandbox = conn.execute(
+                """SELECT ss.*, p.name as project_name
+                   FROM sandbox_state ss
+                   JOIN projects p ON p.id = ss.project_id
+                   WHERE ss.status = 'running'
+                   ORDER BY ss.id DESC LIMIT 1"""
+            ).fetchone()
+            label = self.query_one("#sandbox-status-label", Static)
+            if sandbox:
+                preview = sandbox["preview_type"] or "unknown"
+                port_str = f" | port {sandbox['port']}" if sandbox["port"] else ""
+                tmux_str = f" | tmux: {sandbox['tmux_session']}" if sandbox.get("tmux_session") else ""
+                label.update(
+                    f"[green]running[/green] | {sandbox['project_name']} | "
+                    f"{sandbox['command']} ({preview}){port_str}{tmux_str}"
+                )
+            else:
+                label.update("No sandbox running")
+        except Exception:
+            pass
+
         conn.close()
 
     # ── Event Handlers ────────────────────────────────────────────────
@@ -1146,6 +1196,17 @@ class CustodianAdmin(App):
             self._do_new_claude_session()
         elif button_id == "btn-claude-resume":
             self._do_resume_claude_session()
+        # Sandbox controls
+        elif button_id == "btn-sandbox-start":
+            select = self.query_one("#sandbox-project-select", Select)
+            if isinstance(select.value, int):
+                self._do_sandbox_start(select.value)
+            else:
+                self.notify("Select a project first", severity="warning")
+        elif button_id == "btn-sandbox-stop":
+            self._do_sandbox_stop()
+        elif button_id == "btn-sandbox-preview":
+            self._do_sandbox_open_preview()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         select_id = event.select.id
@@ -1162,6 +1223,10 @@ class CustodianAdmin(App):
             self._show_fossil_detail(event)
         elif table_id == "insight-table":
             self._show_insight_detail(event)
+        elif table_id == "gh-repos-table":
+            # One-click import: clicking a row immediately clones + registers it
+            row_idx = event.cursor_row
+            self._do_clone_gh_repo(row_idx)
 
     def _show_fossil_detail(self, event):
         """Show full fossil details in the detail pane."""
@@ -1782,6 +1847,228 @@ class CustodianAdmin(App):
 
         except Exception as e:
             log.write(f"[bold red]Error: {e}[/bold red]")
+
+    # ── Sandbox Workers ──────────────────────────────────────────────
+
+    @work(thread=True)
+    def _do_sandbox_start(self, project_id):
+        """Start a sandbox for the selected project."""
+        conn = get_db()
+        proj = conn.execute(
+            "SELECT name, path FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        conn.close()
+
+        if not proj:
+            self.call_from_thread(self.notify, "Project not found", severity="error")
+            return
+
+        project_name = proj["name"]
+        project_path = _to_native_path(proj["path"])
+        log = self.query_one("#sandbox-log", RichLog)
+        log.clear()
+        log.write(f"[bold blue]Starting sandbox for {project_name}...[/bold blue]")
+
+        # Import detection logic inline (same as MCP server)
+        command, port, app_type = None, None, None
+        pkg = os.path.join(project_path, "package.json")
+        if os.path.isfile(pkg):
+            try:
+                with open(pkg) as f:
+                    data = json.load(f)
+                scripts = data.get("scripts", {})
+                if "dev" in scripts:
+                    command, port, app_type = "npm run dev", 3000, "web"
+                elif "start" in scripts:
+                    command, port, app_type = "npm start", 3000, "web"
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if not command and os.path.isfile(os.path.join(project_path, "manage.py")):
+            command, port, app_type = "python manage.py runserver", 8000, "web"
+
+        if not command:
+            for entry in ("app.py", "main.py"):
+                fp = os.path.join(project_path, entry)
+                if os.path.isfile(fp):
+                    try:
+                        with open(fp) as f:
+                            content = f.read(2000)
+                        if any(kw in content for kw in ["textual", "curses", "blessed", "prompt_toolkit"]):
+                            command, port, app_type = f"python {entry}", None, "terminal"
+                        elif any(kw in content for kw in ["flask", "Flask", "fastapi", "FastAPI", "uvicorn"]):
+                            command, port, app_type = f"python {entry}", 5000, "web"
+                        else:
+                            command, port, app_type = f"python {entry}", 5000, "web"
+                    except OSError:
+                        command, port, app_type = f"python {entry}", 5000, "web"
+                    break
+
+        if not command:
+            log.write(f"[red]Could not auto-detect command for {project_name}[/red]")
+            self.call_from_thread(self.notify, "No dev command detected", severity="error")
+            return
+
+        log.write(f"Detected: {command} ({app_type})")
+
+        wsh_path = "/home/dev/.waveterm/bin/wsh"
+        wsh_ok = os.path.isfile(wsh_path) and os.environ.get("WAVETERM_BLOCKID")
+
+        try:
+            if app_type == "terminal":
+                session_name = f"sandbox-{project_name}"
+                subprocess.run(["tmux", "kill-session", "-t", session_name],
+                              capture_output=True)
+                subprocess.run(["tmux", "new-session", "-d", "-s", session_name,
+                               "-c", project_path, command], capture_output=True)
+                log.write(f"[green]Started tmux session: {session_name}[/green]")
+                pid = None
+            else:
+                session_name = None
+                proc = subprocess.Popen(
+                    command, shell=True, cwd=project_path,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                pid = proc.pid
+                log.write(f"[green]Started PID {pid}[/green]")
+
+            # Open preview via wsh if available
+            if wsh_ok:
+                try:
+                    import time
+                    if app_type == "web" and port:
+                        time.sleep(2)
+                        subprocess.run([wsh_path, "web", "open", "-m", f"http://localhost:{port}"],
+                                      capture_output=True, timeout=5)
+                        log.write("[green]Browser preview opened[/green]")
+                    elif app_type == "terminal" and session_name:
+                        subprocess.run([wsh_path, "run", "-m", "--",
+                                       "tmux", "attach-session", "-t", session_name],
+                                      capture_output=True, timeout=5)
+                        log.write("[green]Terminal preview opened[/green]")
+                except Exception:
+                    log.write("[yellow]Preview failed — use Sandbox widget in sidebar[/yellow]")
+            else:
+                if app_type == "web" and port:
+                    log.write(f"[yellow]Open http://localhost:{port}[/yellow]")
+                elif session_name:
+                    log.write(f"[yellow]Run: tmux attach -t {session_name}[/yellow]")
+
+            # Update DB
+            conn = get_db()
+            conn.execute("DELETE FROM sandbox_state WHERE project_id = ?", (project_id,))
+            conn.execute(
+                """INSERT INTO sandbox_state
+                   (project_id, command, pid, port, status, preview_type, tmux_session)
+                   VALUES (?, ?, ?, ?, 'running', ?, ?)""",
+                (project_id, command, pid, port, app_type, session_name),
+            )
+            conn.commit()
+            conn.close()
+
+            log.write(f"[bold green]Sandbox running for {project_name}[/bold green]")
+            self.call_from_thread(self._refresh_status_tab)
+            self.call_from_thread(self.notify, f"Sandbox started for {project_name}")
+
+        except Exception as e:
+            log.write(f"[bold red]Failed: {e}[/bold red]")
+            self.call_from_thread(self.notify, f"Sandbox failed: {e}", severity="error")
+
+    @work(thread=True)
+    def _do_sandbox_stop(self):
+        """Stop the running sandbox."""
+        log = self.query_one("#sandbox-log", RichLog)
+        log.write("[bold yellow]Stopping sandbox...[/bold yellow]")
+
+        conn = get_db()
+        sandbox = conn.execute(
+            """SELECT ss.*, p.name as project_name
+               FROM sandbox_state ss
+               JOIN projects p ON p.id = ss.project_id
+               WHERE ss.status = 'running'
+               ORDER BY ss.id DESC LIMIT 1"""
+        ).fetchone()
+
+        if not sandbox:
+            log.write("[red]No sandbox is running[/red]")
+            self.call_from_thread(self.notify, "No sandbox running", severity="warning")
+            conn.close()
+            return
+
+        project_name = sandbox["project_name"]
+
+        # Kill tmux session if terminal app
+        tmux_session = sandbox.get("tmux_session") if "tmux_session" in sandbox.keys() else None
+        if tmux_session:
+            subprocess.run(["tmux", "kill-session", "-t", tmux_session],
+                          capture_output=True, timeout=5)
+            log.write(f"Killed tmux session: {tmux_session}")
+
+        # Kill process if web app
+        pid = sandbox["pid"]
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                log.write(f"Terminated PID {pid}")
+            except (ProcessLookupError, PermissionError):
+                log.write(f"[yellow]PID {pid} already gone[/yellow]")
+
+        conn.execute(
+            "UPDATE sandbox_state SET status = 'stopped', pid = NULL, tmux_session = NULL WHERE id = ?",
+            (sandbox["id"],),
+        )
+        conn.commit()
+        conn.close()
+
+        log.write(f"[bold green]Stopped sandbox for {project_name}[/bold green]")
+        self.call_from_thread(self._refresh_status_tab)
+        self.call_from_thread(self.notify, f"Sandbox stopped for {project_name}")
+
+    def _do_sandbox_open_preview(self):
+        """Open a preview block for the running sandbox."""
+        conn = get_db()
+        sandbox = conn.execute(
+            """SELECT ss.*, p.name as project_name
+               FROM sandbox_state ss
+               JOIN projects p ON p.id = ss.project_id
+               WHERE ss.status = 'running'
+               ORDER BY ss.id DESC LIMIT 1"""
+        ).fetchone()
+        conn.close()
+
+        if not sandbox:
+            self.notify("No sandbox running", severity="warning")
+            return
+
+        wsh_path = "/home/dev/.waveterm/bin/wsh"
+        wsh_ok = os.path.isfile(wsh_path) and os.environ.get("WAVETERM_BLOCKID")
+        preview_type = sandbox.get("preview_type") if "preview_type" in sandbox.keys() else None
+        port = sandbox["port"]
+        tmux = sandbox.get("tmux_session") if "tmux_session" in sandbox.keys() else None
+
+        if not wsh_ok:
+            if port:
+                self.notify(f"Open http://localhost:{port} in browser")
+            elif tmux:
+                self.notify(f"Run: tmux attach -t {tmux}")
+            else:
+                self.notify("No preview available", severity="warning")
+            return
+
+        try:
+            if preview_type == "web" and port:
+                subprocess.run([wsh_path, "web", "open", "-m", f"http://localhost:{port}"],
+                              capture_output=True, timeout=5)
+                self.notify(f"Browser preview opened for {sandbox['project_name']}")
+            elif preview_type == "terminal" and tmux:
+                subprocess.run([wsh_path, "run", "-m", "--",
+                               "tmux", "attach-session", "-t", tmux],
+                              capture_output=True, timeout=5)
+                self.notify(f"Terminal preview opened for {sandbox['project_name']}")
+            else:
+                self.notify("No preview available", severity="warning")
+        except Exception as e:
+            self.notify(f"Preview failed: {e}", severity="error")
 
     # ── Editor Tab ──────────────────────────────────────────────────
 

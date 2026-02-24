@@ -31,9 +31,21 @@
     "color": "#6c63ff",
     "blockdef": {
       "meta": {
-        "view": "term",
-        "controller": "cmd",
-        "cmd": "cmd.exe /c start http://localhost:9001"
+        "view": "web",
+        "url": "http://localhost:9001",
+        "pinnedurl": "http://localhost:9001"
+      }
+    }
+  },
+  "sandbox-01": {
+    "icon": "play",
+    "label": "Sandbox",
+    "color": "#22c55e",
+    "blockdef": {
+      "meta": {
+        "view": "web",
+        "url": "http://localhost:7777",
+        "pinnedurl": "http://localhost:7777"
       }
     }
   },

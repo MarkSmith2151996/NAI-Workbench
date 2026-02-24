@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# SANDBOX — Smart Viewport for Wave Terminal
+# Auto-attaches to running sandbox programs so you SEE them live.
+#
+# Terminal apps (TUI/CLI) → you're dropped directly into the running program
+# Web apps (React/Next/Flask) → auto-opens browser pane + shows server logs
+# Nothing running → idle screen, auto-detects when something starts
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
+DB_PATH="$WORKBENCH_DIR/custodian/custodian.db"
+WSH="/home/dev/.waveterm/bin/wsh"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+show_idle() {
+    clear
+    echo ""
+    echo -e "  ${GREEN}${BOLD}╔══════════════════════════════════════════╗${RESET}"
+    echo -e "  ${GREEN}${BOLD}║           SANDBOX  ▶  Idle               ║${RESET}"
+    echo -e "  ${GREEN}${BOLD}╠══════════════════════════════════════════╣${RESET}"
+    echo -e "  ${GREEN}${BOLD}║                                          ║${RESET}"
+    echo -e "  ${GREEN}${BOLD}║${RESET}  Waiting for ${CYAN}sandbox_start()${RESET}...        ${GREEN}${BOLD}║${RESET}"
+    echo -e "  ${GREEN}${BOLD}║${RESET}                                          ${GREEN}${BOLD}║${RESET}"
+    echo -e "  ${GREEN}${BOLD}║${RESET}  ${DIM}Claude will launch programs here.${RESET}       ${GREEN}${BOLD}║${RESET}"
+    echo -e "  ${GREEN}${BOLD}║${RESET}  ${DIM}Terminal apps show live in this pane.${RESET}   ${GREEN}${BOLD}║${RESET}"
+    echo -e "  ${GREEN}${BOLD}║${RESET}  ${DIM}Web apps auto-open a browser view.${RESET}     ${GREEN}${BOLD}║${RESET}"
+    echo -e "  ${GREEN}${BOLD}║${RESET}                                          ${GREEN}${BOLD}║${RESET}"
+    echo -e "  ${GREEN}${BOLD}╚══════════════════════════════════════════╝${RESET}"
+    echo ""
+}
+
+# Query DB for running sandbox
+get_sandbox() {
+    sqlite3 -separator '|' "$DB_PATH" \
+        "SELECT ss.status, ss.command, ss.port, ss.preview_type, ss.tmux_session, p.name
+         FROM sandbox_state ss
+         JOIN projects p ON p.id = ss.project_id
+         WHERE ss.status = 'running'
+         ORDER BY ss.id DESC LIMIT 1" 2>/dev/null
+}
+
+# Track whether we already opened a browser for this sandbox
+_browser_opened=""
+
+while true; do
+    state=$(get_sandbox)
+
+    if [ -z "$state" ]; then
+        _browser_opened=""
+        show_idle
+        # Poll faster when idle — catch new sandboxes quickly
+        sleep 2
+        continue
+    fi
+
+    # Parse: status|command|port|preview_type|tmux_session|project_name
+    IFS='|' read -r status command port preview_type tmux_session project_name <<< "$state"
+
+    if [ -n "$tmux_session" ]; then
+        # ── LIVE ATTACH ─────────────────────────────────────────
+        # Check if tmux session actually exists
+        if tmux has-session -t "$tmux_session" 2>/dev/null; then
+
+            # For web apps, auto-open browser pane (once per sandbox)
+            if [ "$preview_type" = "web" ] && [ -n "$port" ] && [ "$_browser_opened" != "$tmux_session" ]; then
+                if [ -x "$WSH" ] && [ -n "$WAVETERM_BLOCKID" ]; then
+                    "$WSH" web open "http://localhost:$port" 2>/dev/null &
+                fi
+                _browser_opened="$tmux_session"
+            fi
+
+            # Attach to tmux — user sees the ACTUAL PROGRAM
+            # Terminal apps: interactive TUI
+            # Web apps: server output/logs scrolling live
+            tmux attach-session -t "$tmux_session" 2>/dev/null
+
+            # tmux detached or session ended — loop back to check state
+            sleep 1
+        else
+            # tmux session gone but DB still says running — wait for cleanup
+            clear
+            echo -e "  ${YELLOW}Session ${tmux_session} ended. Waiting...${RESET}"
+            sleep 3
+        fi
+    else
+        # No tmux session (shouldn't happen with new code, but handle gracefully)
+        clear
+        echo -e "  ${BOLD}${project_name}${RESET} — ${command}"
+        [ -n "$port" ] && echo -e "  ${CYAN}http://localhost:${port}${RESET}"
+        echo -e "  ${DIM}No tmux session to attach to.${RESET}"
+        sleep 5
+    fi
+done

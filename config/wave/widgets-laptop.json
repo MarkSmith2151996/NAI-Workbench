@@ -35,6 +35,18 @@
       }
     }
   },
+  "sandbox-01": {
+    "icon": "play",
+    "label": "Sandbox",
+    "color": "#22c55e",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/sandbox-session"
+      }
+    }
+  },
   "wsl-terminal": {
     "icon": "brands@linux",
     "label": "Terminal",

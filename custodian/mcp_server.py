@@ -15,6 +15,8 @@
 import collections
 import json
 import os
+import platform as _platform
+import re
 import signal
 import sqlite3
 import subprocess
@@ -28,6 +30,23 @@ from mcp.types import TextContent, Tool
 
 # Database path
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custodian.db")
+
+# Detect WSL and provide path translation
+_IS_WSL = (_platform.system() == "Linux"
+           and os.path.exists("/proc/version")
+           and "microsoft" in open("/proc/version").read().lower())
+
+
+def _to_native_path(path):
+    """Convert Windows paths to WSL /mnt/ paths when running in WSL."""
+    if not _IS_WSL or not path:
+        return path
+    m = re.match(r"^([A-Za-z]):[/\\](.*)$", path)
+    if m:
+        drive = m.group(1).lower()
+        rest = m.group(2).replace("\\", "/")
+        return f"/mnt/{drive}/{rest}"
+    return path
 
 # Import local symbol parser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -89,6 +108,68 @@ _sandbox_project = None
 _sandbox_command = None
 _sandbox_port = None
 _sandbox_log_lock = threading.Lock()
+_sandbox_tmux_session = None
+_sandbox_preview_type = None  # "web" or "terminal"
+_sandbox_ttyd_proc = None     # ttyd process for terminal app preview
+_sandbox_preview_url = None   # URL where the preview is accessible
+
+WSH_PATH = "/home/dev/.waveterm/bin/wsh"
+TTYD_PORT = 7681
+ROUTER_PORT = 7777
+
+
+def _ensure_sandbox_columns():
+    """Migrate sandbox_state table to add preview_type and tmux_session columns."""
+    try:
+        conn = get_db()
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(sandbox_state)").fetchall()]
+        if "preview_type" not in cols:
+            conn.execute("ALTER TABLE sandbox_state ADD COLUMN preview_type TEXT")
+        if "tmux_session" not in cols:
+            conn.execute("ALTER TABLE sandbox_state ADD COLUMN tmux_session TEXT")
+        if "preview_url" not in cols:
+            conn.execute("ALTER TABLE sandbox_state ADD COLUMN preview_url TEXT")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+_ensure_sandbox_columns()
+
+
+# --- Sandbox Preview Router (port 7777) ---
+# Separate file: sandbox_router.py — can run standalone or as background thread.
+from sandbox_router import run_router as _run_sandbox_router
+threading.Thread(target=_run_sandbox_router, daemon=True).start()
+
+
+def _wsh_available():
+    """Check if wsh is available (running inside Wave Terminal)."""
+    return os.path.isfile(WSH_PATH) and os.environ.get("WAVETERM_BLOCKID")
+
+
+def _open_wave_preview(app_type, port=None, tmux_session=None):
+    """Open a preview block in Wave Terminal via wsh.
+
+    The dedicated Sandbox widget (sidebar) handles the TUI controls.
+    This just opens a quick preview block when called from MCP.
+    """
+    if not _wsh_available():
+        return False
+    try:
+        if app_type == "web" and port:
+            subprocess.run([WSH_PATH, "web", "open", "-m", f"http://localhost:{port}"],
+                          capture_output=True, timeout=5)
+        elif app_type == "terminal" and tmux_session:
+            subprocess.run([WSH_PATH, "run", "-m", "--",
+                           "tmux", "attach-session", "-t", tmux_session],
+                          capture_output=True, timeout=5)
+        else:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def _sandbox_reader(proc):
@@ -105,8 +186,34 @@ def _sandbox_reader(proc):
             pass
 
 
+def _tmux_log_reader(session_name, poll_interval=2):
+    """Poll tmux pane content into the ring buffer for terminal apps."""
+    import time
+    last_len = 0
+    while True:
+        try:
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-200"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                break
+            lines = result.stdout.strip().split("\n")
+            with _sandbox_log_lock:
+                for line in lines[last_len:]:
+                    if line.strip():
+                        _sandbox_log.append(line)
+            last_len = len(lines)
+        except Exception:
+            break
+        time.sleep(poll_interval)
+
+
 def _detect_sandbox_command(project_path):
-    """Auto-detect the dev command for a project."""
+    """Auto-detect the dev command for a project.
+
+    Returns (command, port, app_type) where app_type is 'web' or 'terminal'.
+    """
     pkg = os.path.join(project_path, "package.json")
     if os.path.isfile(pkg):
         try:
@@ -114,20 +221,33 @@ def _detect_sandbox_command(project_path):
                 data = json.load(f)
             scripts = data.get("scripts", {})
             if "dev" in scripts:
-                return "npm run dev", 3000
+                return "npm run dev", 3000, "web"
             if "start" in scripts:
-                return "npm start", 3000
+                return "npm start", 3000, "web"
         except (json.JSONDecodeError, OSError):
             pass
 
+    # Use python3 on Linux/WSL, python on Windows
+    py = "python3" if os.name != "nt" else "python"
+
     if os.path.isfile(os.path.join(project_path, "manage.py")):
-        return "python manage.py runserver", 8000
+        return f"{py} manage.py runserver", 8000, "web"
 
     for entry in ("app.py", "main.py"):
-        if os.path.isfile(os.path.join(project_path, entry)):
-            return f"python {entry}", 5000
+        fp = os.path.join(project_path, entry)
+        if os.path.isfile(fp):
+            try:
+                with open(fp) as f:
+                    content = f.read(2000)
+                if any(kw in content for kw in ["textual", "curses", "blessed", "prompt_toolkit"]):
+                    return f"{py} {entry}", None, "terminal"
+                if any(kw in content for kw in ["flask", "Flask", "fastapi", "FastAPI", "uvicorn"]):
+                    return f"{py} {entry}", 5000, "web"
+            except OSError:
+                pass
+            return f"{py} {entry}", 5000, "web"
 
-    return None, None
+    return None, None, None
 
 
 def _detect_test_command(project_path):
@@ -301,7 +421,19 @@ async def list_tools():
         # --- Sandbox tools ---
         Tool(
             name="sandbox_start",
-            description="Start a dev server / sandbox process for a project. Auto-detects the command (npm run dev, python app.py, etc.) or accepts an override.",
+            description=(
+                "Start a sandbox process for a project. The sandbox runs inside a tmux session that the user's "
+                "Sandbox widget auto-attaches to — the user SEES the program live in their terminal. "
+                "IMPORTANT RULES: "
+                "(1) When creating test programs, demos, or prototypes to DISPLAY in the sandbox, ALWAYS build "
+                "terminal-based UIs using Python Textual, Rich, or curses — these render directly in the sandbox "
+                "terminal and the user can see and interact with them immediately. NEVER create web servers (Flask, "
+                "HTTP) for sandbox display — the user cannot see web pages in the terminal. "
+                "(2) If the project needs Python packages (textual, rich, etc.), call sandbox_install FIRST. "
+                "(3) Only use web mode (with port) for actual web projects (React, Next.js, Django) that already "
+                "have a dev server — these will auto-open a Wave browser pane. "
+                "(4) Do NOT pass a port unless the command actually starts a web server."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -312,6 +444,15 @@ async def list_tools():
                     "command": {
                         "type": "string",
                         "description": "Override command (e.g., 'npm run dev', 'python app.py'). Auto-detected if omitted.",
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "Override port (implies web app type). Auto-detected if omitted.",
+                    },
+                    "preview": {
+                        "type": "boolean",
+                        "description": "Open Wave Terminal preview pane (default true).",
+                        "default": True,
                     },
                 },
                 "required": ["project"],
@@ -370,6 +511,36 @@ async def list_tools():
                         "description": "Override test command. Auto-detected if omitted.",
                     },
                 },
+            },
+        ),
+        Tool(
+            name="sandbox_install",
+            description=(
+                "Install dependencies for a sandbox project. "
+                "IMPORTANT: Call this BEFORE sandbox_start if the project needs packages that aren't installed. "
+                "For sandbox demos/prototypes, install 'textual' and 'rich' for terminal UIs (preferred over web frameworks). "
+                "Accepts a list of packages (pip or npm), or auto-installs from requirements.txt / package.json. "
+                "Uses pip3 for Python projects, npm for Node.js projects."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Project name",
+                    },
+                    "packages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Specific packages to install (e.g., ['textual', 'rich']). If omitted, installs from requirements.txt or package.json.",
+                    },
+                    "manager": {
+                        "type": "string",
+                        "enum": ["pip", "npm"],
+                        "description": "Package manager to use. Auto-detected if omitted (pip for Python, npm for Node.js).",
+                    },
+                },
+                "required": ["project"],
             },
         ),
         # --- Penpot tools ---
@@ -451,6 +622,8 @@ async def call_tool(name: str, arguments: dict):
             return await handle_sandbox_logs(arguments)
         elif name == "sandbox_test":
             return await handle_sandbox_test(arguments)
+        elif name == "sandbox_install":
+            return await handle_sandbox_install(arguments)
         elif name == "penpot_list_projects":
             return await handle_penpot_list_projects(arguments)
         elif name == "penpot_get_page":
@@ -558,7 +731,7 @@ async def handle_lookup_symbol(args):
     if not project:
         return [TextContent(type="text", text=f"Project '{project_name}' not found.")]
 
-    project_path = project["path"]
+    project_path = _to_native_path(project["path"])
     if not os.path.isdir(project_path):
         return [TextContent(type="text", text=f"Project path not found: {project_path}")]
 
@@ -762,7 +935,7 @@ async def handle_trigger_custodian(args):
     try:
         # Launch async — don't block the MCP call
         subprocess.Popen(
-            ["bash", index_script, project["name"], project["path"]],
+            ["bash", index_script, project["name"], _to_native_path(project["path"])],
             cwd=custodian_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -781,9 +954,12 @@ async def handle_trigger_custodian(args):
 
 async def handle_sandbox_start(args):
     global _sandbox_proc, _sandbox_project, _sandbox_command, _sandbox_port
+    global _sandbox_tmux_session, _sandbox_preview_type
 
     project_name = args["project"]
     command_override = args.get("command")
+    port_override = args.get("port")
+    open_preview = args.get("preview", True)
 
     log_query("sandbox_start", project_name, args)
 
@@ -794,6 +970,9 @@ async def handle_sandbox_start(args):
             _sandbox_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             _sandbox_proc.kill()
+    if _sandbox_tmux_session:
+        subprocess.run(["tmux", "kill-session", "-t", _sandbox_tmux_session],
+                      capture_output=True, timeout=5)
 
     conn = get_db()
     project = get_project_by_name(conn, project_name)
@@ -802,15 +981,16 @@ async def handle_sandbox_start(args):
     if not project:
         return [TextContent(type="text", text=f"Project '{project_name}' not found.")]
 
-    project_path = project["path"]
+    project_path = _to_native_path(project["path"])
     if not os.path.isdir(project_path):
         return [TextContent(type="text", text=f"Project path not found: {project_path}")]
 
     if command_override:
         command = command_override
-        port = None
+        port = port_override
+        app_type = "web" if port else "terminal"
     else:
-        command, port = _detect_sandbox_command(project_path)
+        command, port, app_type = _detect_sandbox_command(project_path)
         if not command:
             return [TextContent(
                 type="text",
@@ -818,39 +998,125 @@ async def handle_sandbox_start(args):
                      "Pass a 'command' argument (e.g., 'npm run dev').",
             )]
 
+    # Auto-install dependencies if manifest exists
+    dep_msg = ""
+    py = "python3" if os.name != "nt" else "python"
+    req_file = os.path.join(project_path, "requirements.txt")
+    pkg_file = os.path.join(project_path, "package.json")
+    node_modules = os.path.join(project_path, "node_modules")
+
+    if os.path.isfile(req_file):
+        dep_result = subprocess.run(
+            [py, "-m", "pip", "install", "-q", "--break-system-packages", "-r", "requirements.txt"],
+            cwd=project_path, capture_output=True, text=True, timeout=120,
+        )
+        if dep_result.returncode == 0:
+            dep_msg = " Deps installed from requirements.txt."
+        else:
+            dep_msg = f" WARNING: pip install failed: {dep_result.stderr[:200]}"
+    elif os.path.isfile(pkg_file) and not os.path.isdir(node_modules):
+        dep_result = subprocess.run(
+            ["npm", "install"],
+            cwd=project_path, capture_output=True, text=True, timeout=120,
+        )
+        if dep_result.returncode == 0:
+            dep_msg = " Deps installed via npm install."
+        else:
+            dep_msg = f" WARNING: npm install failed: {dep_result.stderr[:200]}"
+
     _sandbox_log.clear()
     _sandbox_project = project_name
     _sandbox_command = command
     _sandbox_port = port
+    _sandbox_preview_type = app_type
 
     try:
-        # Use shell=True so commands like "npm run dev" work
-        _sandbox_proc = subprocess.Popen(
-            command,
-            shell=True,
-            cwd=project_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        global _sandbox_ttyd_proc, _sandbox_preview_url
 
-        # Start background reader thread
-        reader = threading.Thread(target=_sandbox_reader, args=(_sandbox_proc,), daemon=True)
-        reader.start()
+        # Kill any previous ttyd
+        if _sandbox_ttyd_proc:
+            try:
+                _sandbox_ttyd_proc.terminate()
+                _sandbox_ttyd_proc.wait(timeout=3)
+            except Exception:
+                pass
+            _sandbox_ttyd_proc = None
+
+        # ALL sandboxes run in tmux for log capture + ttyd attachment
+        session_name = f"sandbox-{project_name}"
+        _sandbox_tmux_session = session_name
+
+        # Kill any existing session with this name
+        subprocess.run(["tmux", "kill-session", "-t", session_name],
+                      capture_output=True)
+
+        if app_type == "terminal":
+            # Short-lived scripts: wrap so session stays alive after exit
+            tmux_cmd = f'{command}; echo "\\n[sandbox exited $?]"; sleep 86400'
+        else:
+            # Web servers run indefinitely, no wrapper needed
+            tmux_cmd = command
+
+        subprocess.run(["tmux", "new-session", "-d", "-s", session_name,
+                       "-c", project_path, "bash", "-c", tmux_cmd],
+                      capture_output=True)
+        _sandbox_proc = None
+
+        # Start log reader for Claude's sandbox_logs() tool
+        threading.Thread(target=_tmux_log_reader, args=(session_name,), daemon=True).start()
+
+        # Get tmux pane PID for tracking
+        pid_result = subprocess.run(
+            ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pid = int(pid_result.stdout.strip()) if pid_result.returncode == 0 and pid_result.stdout.strip() else None
+
+        # --- Preview URL ---
+        # Web apps: point directly at the app's own URL (rendered HTML).
+        # Terminal apps: use ttyd to wrap the tmux session as a web page.
+        subprocess.run(["pkill", "-f", f"ttyd.*{TTYD_PORT}"], capture_output=True)
+        import time
+        time.sleep(0.3)
+
+        if app_type == "web" and port:
+            # Web app: iframe shows the actual rendered page
+            preview_url = f"http://localhost:{port}"
+            # Still start ttyd as fallback for terminal-style viewing
+            _sandbox_ttyd_proc = subprocess.Popen(
+                ["ttyd", "-p", str(TTYD_PORT), "-W",
+                 "tmux", "attach-session", "-t", session_name],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            # Terminal app: ttyd wraps the interactive TUI as a web page
+            _sandbox_ttyd_proc = subprocess.Popen(
+                ["ttyd", "-p", str(TTYD_PORT), "-W",
+                 "tmux", "attach-session", "-t", session_name],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            preview_url = f"http://localhost:{TTYD_PORT}"
+
+        _sandbox_preview_url = preview_url
 
         # Update DB
         conn = get_db()
         conn.execute("DELETE FROM sandbox_state WHERE project_id = ?", (project["id"],))
         conn.execute(
-            "INSERT INTO sandbox_state (project_id, command, pid, port, status) VALUES (?, ?, ?, ?, 'running')",
-            (project["id"], command, _sandbox_proc.pid, port),
+            """INSERT INTO sandbox_state
+               (project_id, command, pid, port, status, preview_type, tmux_session, preview_url)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, ?)""",
+            (project["id"], command, pid, port, app_type, session_name, preview_url),
         )
         conn.commit()
         conn.close()
 
+        pid_info = f" (PID {pid})" if pid else ""
         port_info = f" on port {port}" if port else ""
         return [TextContent(
             type="text",
-            text=f"Started `{command}`{port_info} (PID {_sandbox_proc.pid}) for {project_name}.",
+            text=f"Started `{command}` ({app_type}){port_info}{pid_info} for {project_name}.{dep_msg}"
+                 f" Preview: {preview_url} — Sandbox widget (localhost:{ROUTER_PORT}) shows it automatically.",
         )]
 
     except Exception as e:
@@ -859,18 +1125,36 @@ async def handle_sandbox_start(args):
 
 async def handle_sandbox_stop(args):
     global _sandbox_proc, _sandbox_project, _sandbox_command, _sandbox_port
+    global _sandbox_tmux_session, _sandbox_preview_type, _sandbox_ttyd_proc, _sandbox_preview_url
 
     log_query("sandbox_stop")
 
-    if not _sandbox_proc or _sandbox_proc.poll() is not None:
+    is_running = (_sandbox_proc and _sandbox_proc.poll() is None) or _sandbox_tmux_session
+    if not is_running:
         return [TextContent(type="text", text="No sandbox is running.")]
 
     try:
-        _sandbox_proc.terminate()
-        try:
-            _sandbox_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _sandbox_proc.kill()
+        # Kill ttyd preview server
+        if _sandbox_ttyd_proc:
+            try:
+                _sandbox_ttyd_proc.terminate()
+                _sandbox_ttyd_proc.wait(timeout=3)
+            except Exception:
+                pass
+            _sandbox_ttyd_proc = None
+
+        # Kill tmux session
+        if _sandbox_tmux_session:
+            subprocess.run(["tmux", "kill-session", "-t", _sandbox_tmux_session],
+                          capture_output=True, timeout=5)
+
+        # Terminate subprocess fallback
+        if _sandbox_proc and _sandbox_proc.poll() is None:
+            _sandbox_proc.terminate()
+            try:
+                _sandbox_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _sandbox_proc.kill()
 
         # Update DB
         if _sandbox_project:
@@ -878,7 +1162,7 @@ async def handle_sandbox_stop(args):
             project = get_project_by_name(conn, _sandbox_project)
             if project:
                 conn.execute(
-                    "UPDATE sandbox_state SET status = 'stopped', pid = NULL WHERE project_id = ?",
+                    "UPDATE sandbox_state SET status = 'stopped', pid = NULL, tmux_session = NULL, preview_url = NULL WHERE project_id = ?",
                     (project["id"],),
                 )
                 conn.commit()
@@ -889,6 +1173,10 @@ async def handle_sandbox_stop(args):
         _sandbox_project = None
         _sandbox_command = None
         _sandbox_port = None
+        _sandbox_tmux_session = None
+        _sandbox_preview_type = None
+        _sandbox_ttyd_proc = None
+        _sandbox_preview_url = None
 
         return [TextContent(type="text", text=f"Stopped sandbox for {name}.")]
     except Exception as e:
@@ -914,14 +1202,31 @@ async def handle_sandbox_restart(args):
 async def handle_sandbox_status(args):
     log_query("sandbox_status")
 
-    if not _sandbox_proc:
+    is_running = (_sandbox_proc and _sandbox_proc.poll() is None) or _sandbox_tmux_session
+    if not _sandbox_proc and not _sandbox_tmux_session:
         return [TextContent(type="text", text=json.dumps({
             "status": "stopped",
             "project": None,
             "command": None,
+            "preview_type": None,
+            "tmux_session": None,
         }))]
 
-    running = _sandbox_proc.poll() is None
+    if _sandbox_tmux_session:
+        # Terminal app — check if tmux session is still alive
+        check = subprocess.run(["tmux", "has-session", "-t", _sandbox_tmux_session],
+                              capture_output=True, timeout=5)
+        running = check.returncode == 0
+        status = "running" if running else "exited"
+        pid = None
+    elif _sandbox_proc:
+        running = _sandbox_proc.poll() is None
+        status = "running" if running else f"exited (code {_sandbox_proc.returncode})"
+        pid = _sandbox_proc.pid if running else None
+    else:
+        running = False
+        status = "stopped"
+        pid = None
 
     with _sandbox_log_lock:
         error_count = sum(
@@ -932,11 +1237,15 @@ async def handle_sandbox_status(args):
         log_lines = len(_sandbox_log)
 
     result = {
-        "status": "running" if running else f"exited (code {_sandbox_proc.returncode})",
+        "status": status,
         "project": _sandbox_project,
         "command": _sandbox_command,
-        "pid": _sandbox_proc.pid if running else None,
+        "pid": pid,
         "port": _sandbox_port,
+        "preview_type": _sandbox_preview_type,
+        "tmux_session": _sandbox_tmux_session,
+        "preview_url": _sandbox_preview_url,
+        "router_url": f"http://localhost:{ROUTER_PORT}",
         "log_lines": log_lines,
         "errors": error_count,
         "warnings": warning_count,
@@ -984,7 +1293,7 @@ async def handle_sandbox_test(args):
         project = get_project_by_name(conn, _sandbox_project)
         conn.close()
         if project:
-            project_path = project["path"]
+            project_path = _to_native_path(project["path"])
 
     if not project_path:
         return [TextContent(
@@ -1026,6 +1335,88 @@ async def handle_sandbox_test(args):
         return [TextContent(type="text", text="Test command timed out after 120 seconds.")]
     except Exception as e:
         return [TextContent(type="text", text=f"Failed to run tests: {e}")]
+
+
+async def handle_sandbox_install(args):
+    """Install dependencies for a sandbox project."""
+    project_name = args["project"]
+    packages = args.get("packages", [])
+    manager = args.get("manager")
+
+    log_query("sandbox_install", project_name, args)
+
+    conn = get_db()
+    project = get_project_by_name(conn, project_name)
+    conn.close()
+
+    if not project:
+        return [TextContent(type="text", text=f"Project '{project_name}' not found.")]
+
+    project_path = _to_native_path(project["path"])
+    if not os.path.isdir(project_path):
+        return [TextContent(type="text", text=f"Project path not found: {project_path}")]
+
+    # Auto-detect package manager if not specified
+    if not manager:
+        if os.path.isfile(os.path.join(project_path, "package.json")):
+            manager = "npm"
+        else:
+            manager = "pip"
+
+    py = "python3" if os.name != "nt" else "python"
+
+    try:
+        if packages:
+            # Install specific packages
+            if manager == "pip":
+                cmd = [py, "-m", "pip", "install", "--break-system-packages"] + list(packages)
+            else:
+                cmd = ["npm", "install"] + list(packages)
+
+            result = subprocess.run(
+                cmd, cwd=project_path,
+                capture_output=True, text=True, timeout=120,
+            )
+        else:
+            # Auto-install from manifest files
+            if manager == "pip":
+                req_file = os.path.join(project_path, "requirements.txt")
+                if os.path.isfile(req_file):
+                    cmd = [py, "-m", "pip", "install", "--break-system-packages", "-r", "requirements.txt"]
+                else:
+                    return [TextContent(
+                        type="text",
+                        text=f"No requirements.txt found in {project_name}. "
+                             "Pass specific packages: [\"textual\", \"rich\"]",
+                    )]
+                result = subprocess.run(
+                    cmd, cwd=project_path,
+                    capture_output=True, text=True, timeout=120,
+                )
+            else:
+                cmd = ["npm", "install"]
+                result = subprocess.run(
+                    cmd, cwd=project_path,
+                    capture_output=True, text=True, timeout=120,
+                )
+
+        # Build response
+        output = {
+            "project": project_name,
+            "manager": manager,
+            "packages": packages if packages else "from manifest",
+            "exit_code": result.returncode,
+            "success": result.returncode == 0,
+            "stdout": result.stdout[-3000:] if len(result.stdout) > 3000 else result.stdout,
+            "stderr": result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr,
+        }
+
+        return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+    except subprocess.TimeoutExpired:
+        return [TextContent(type="text", text="Install timed out after 120 seconds.")]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Failed to install: {e}")]
 
 
 # --- Penpot Helpers ---
