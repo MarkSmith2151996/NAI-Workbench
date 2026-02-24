@@ -219,13 +219,6 @@ RULES:
 
 def launch_claude(project, session_id, resume, system_prompt):
     """Launch Claude CLI as a child process. Returns when Claude exits."""
-    workbench_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # Use WSL-specific MCP config when running in WSL (has WSL paths + venv python)
-    if _IS_WSL:
-        mcp_config = os.path.join(workbench_dir, ".claude", "mcp-wsl.json")
-    else:
-        mcp_config = os.path.join(workbench_dir, ".claude", "mcp.json")
-
     # Reset terminal fully — clear Textual's alternate screen buffer
     sys.stdout.write("\033[?1049l")  # exit alternate screen
     sys.stdout.write("\033[?25h")    # show cursor
@@ -245,8 +238,9 @@ def launch_claude(project, session_id, resume, system_prompt):
     else:
         args.extend(["--session-id", session_id])
 
-    if os.path.isfile(mcp_config):
-        args.extend(["--mcp-config", mcp_config])
+    # MCP tools are configured in user-scope ~/.claude.json (registered via
+    # `claude mcp add-json --scope user custodian '...'`). No --mcp-config needed.
+    # Using --mcp-config would override/conflict with the working user-scope config.
 
     args.extend(["--append-system-prompt", system_prompt])
 
