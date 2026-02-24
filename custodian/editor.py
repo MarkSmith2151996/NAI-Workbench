@@ -218,16 +218,13 @@ RULES:
 
 
 def launch_claude(project, session_id, resume, system_prompt):
-    """Replace this process with Claude CLI."""
+    """Launch Claude CLI as a child process. Returns when Claude exits."""
     workbench_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # Use WSL-specific MCP config when running in WSL (has WSL paths + venv python)
     if _IS_WSL:
         mcp_config = os.path.join(workbench_dir, ".claude", "mcp-wsl.json")
     else:
         mcp_config = os.path.join(workbench_dir, ".claude", "mcp.json")
-
-    # Set cwd to project path
-    os.chdir(project["path"])
 
     # Reset terminal fully — clear Textual's alternate screen buffer
     sys.stdout.write("\033[?1049l")  # exit alternate screen
@@ -237,7 +234,7 @@ def launch_claude(project, session_id, resume, system_prompt):
     sys.stdout.write("\033[H")       # cursor home
     sys.stdout.flush()
 
-    # Build args list — execvp passes directly to the process, no shell needed
+    # Build args list
     args = ["claude"]
 
     # Skip permission prompts — editor sessions are trusted dev environments
@@ -253,8 +250,8 @@ def launch_claude(project, session_id, resume, system_prompt):
 
     args.extend(["--append-system-prompt", system_prompt])
 
-    # Replace this process with claude
-    os.execvp("claude", args)
+    # Run Claude as child process — returns when Claude exits (double-Esc)
+    subprocess.run(args, cwd=project["path"])
 
 
 # --- TUI ---
@@ -523,11 +520,16 @@ if __name__ == "__main__":
         init_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init_db.py")
         subprocess.run([sys.executable, init_script])
 
-    app = EditorApp()
-    result = app.run()
+    # Main loop: picker → Claude → picker → Claude → ...
+    # Double-Esc in Claude exits back to the picker. Q in picker quits entirely.
+    while True:
+        app = EditorApp()
+        result = app.run()
 
-    # If the user selected a project, launch Claude after TUI is fully gone
-    if result and isinstance(result, dict) and "project" in result:
+        # If user quit (Q) or closed without selecting, exit
+        if not result or not isinstance(result, dict) or "project" not in result:
+            break
+
         proj = result["project"]
         action = "Resuming" if result["resume"] else "Starting new"
         print(f"\n{action} session for {proj['name']}...")
@@ -544,3 +546,6 @@ if __name__ == "__main__":
             result["resume"],
             result["system_prompt"],
         )
+
+        # Claude exited (double-Esc) — loop back to picker
+        print("\n[Returning to project picker...]\n")

@@ -195,7 +195,7 @@ New Textual app — the project picker + session manager.
 2. Loads fossil brief → builds system prompt (reuse `EDITOR_SYSTEM_PROMPT` + fossil data + sandbox tool docs)
 3. Checks `editor_sessions` for existing session → offers Resume or New
 4. Saves/updates session record in DB
-5. `os.execvp("claude", [...])` with:
+5. `subprocess.run(["claude", ...])` — launches Claude as child process. When Claude exits (double-Esc), returns to the picker. With:
    - `--session-id <uuid>` (from DB)
    - `--resume` (if resuming)
    - `--mcp-config /path/to/.claude/mcp.json`

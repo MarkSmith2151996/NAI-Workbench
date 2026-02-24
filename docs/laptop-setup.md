@@ -103,6 +103,16 @@ You should see 4 sidebar widgets:
 | **Penpot** | Web (9001) | Penpot design tool (wireframes) |
 | **Terminal** | SSH terminal | Raw shell on the PC |
 
+### Editor Navigation
+
+| Action | Key | What happens |
+|--------|-----|-------------|
+| Move between projects | `j`/`k` or arrow keys | Highlights project card |
+| Resume existing session | `R` or Enter (if session exists) | Launches Claude with previous session |
+| Start new session | `N` or Enter (if no session) | Launches Claude with fresh session |
+| **Exit Claude → back to picker** | **Double-Esc** | Exits Claude CLI, returns to project selector |
+| Quit editor entirely | `Q` | Closes the editor widget |
+
 ### Custodian MCP Setup (one-time)
 
 The Editor launches Claude CLI with 17 MCP tools (custodian knowledge, sandbox, Penpot). For MCP to work, register the custodian server on the PC's WSL:
