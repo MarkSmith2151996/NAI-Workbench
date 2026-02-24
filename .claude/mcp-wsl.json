@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "custodian": {
+      "command": "/home/dev/.custodian-venv/bin/python3",
+      "args": ["/home/dev/projects/nai-workbench/custodian/mcp_server.py"],
+      "env": {
+        "PYTHONPATH": "/home/dev/projects/nai-workbench/custodian"
+      }
+    }
+  }
+}

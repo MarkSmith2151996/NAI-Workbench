@@ -1,0 +1,4 @@
+# Force Unix line endings for scripts that run in WSL
+bin/* text eol=lf
+custodian/*.py text eol=lf
+custodian/*.sql text eol=lf

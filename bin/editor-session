@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# EDITOR — Launch the Custodian Editor (project picker + Claude session)
+# Widget entry point for Wave Terminal
+# Works on both Windows (Git Bash) and WSL (via SSH from laptop)
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Activate venv — detect platform first
+WSL_VENV="$HOME/.custodian-venv"
+LOCAL_VENV="$WORKBENCH_DIR/custodian/.venv"
+
+if uname -s 2>/dev/null | grep -qi linux; then
+    # WSL or native Linux
+    if [ -d "$WSL_VENV/bin" ]; then
+        source "$WSL_VENV/bin/activate"
+    elif [ -d "$LOCAL_VENV/bin" ]; then
+        source "$LOCAL_VENV/bin/activate"
+    fi
+else
+    # Windows (Git Bash / MSYS)
+    if [ -d "$LOCAL_VENV/Scripts" ]; then
+        source "$LOCAL_VENV/Scripts/activate"
+    elif [ -d "$LOCAL_VENV/bin" ]; then
+        source "$LOCAL_VENV/bin/activate"
+    fi
+fi
+
+# Ensure DB exists
+if [ ! -f "$WORKBENCH_DIR/custodian/custodian.db" ]; then
+    python "$WORKBENCH_DIR/custodian/init_db.py"
+fi
+
+cd "$WORKBENCH_DIR"
+python custodian/editor.py

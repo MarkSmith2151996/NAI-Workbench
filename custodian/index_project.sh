@@ -35,22 +35,9 @@ if [ ! -d "$PROJECT_PATH" ]; then
     exit 1
 fi
 
-# Activate venv — detect platform first (same pattern as bin/admin-session)
-WSL_VENV="$HOME/.custodian-venv"
-if uname -s 2>/dev/null | grep -qi linux; then
-    # WSL or native Linux — prefer the WSL-native venv
-    if [ -d "$WSL_VENV/bin" ]; then
-        source "$WSL_VENV/bin/activate"
-    elif [ -d "$VENV_DIR/bin" ]; then
-        source "$VENV_DIR/bin/activate"
-    fi
-else
-    # Windows (Git Bash / MSYS)
-    if [ -d "$VENV_DIR/Scripts" ]; then
-        source "$VENV_DIR/Scripts/activate"
-    elif [ -d "$VENV_DIR/bin" ]; then
-        source "$VENV_DIR/bin/activate"
-    fi
+# Activate venv if it exists
+if [ -d "$VENV_DIR" ]; then
+    source "$VENV_DIR/Scripts/activate" 2>/dev/null || source "$VENV_DIR/bin/activate" 2>/dev/null || true
 fi
 
 mkdir -p "$TEMP_DIR"
@@ -87,6 +74,14 @@ else
         -not -path '*/.venv/*' \
         -type f \
         -exec wc -l {} \; 2>/dev/null > "$REPOMIX_OUTPUT" || true
+fi
+# Cap repomix output to leave room for symbols + git in the Sonnet context
+REPOMIX_SIZE=$(wc -c < "$REPOMIX_OUTPUT")
+REPOMIX_MAX=200000  # ~200KB for codebase, rest for symbols+git
+if [ "$REPOMIX_SIZE" -gt "$REPOMIX_MAX" ]; then
+    warn "Repomix output too large ($REPOMIX_SIZE bytes), trimming to ${REPOMIX_MAX} bytes"
+    head -c "$REPOMIX_MAX" "$REPOMIX_OUTPUT" > "$REPOMIX_OUTPUT.tmp"
+    mv "$REPOMIX_OUTPUT.tmp" "$REPOMIX_OUTPUT"
 fi
 success "Repomix output: $(wc -c < "$REPOMIX_OUTPUT") bytes"
 

@@ -12,11 +12,14 @@
 - trigger_custodian: Run Sonnet indexing for a project
 """
 
+import collections
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import datetime
 
 from mcp.server import Server
@@ -76,6 +79,79 @@ def get_project_by_name(conn, name):
         (f"%{name}%",),
     ).fetchone()
     return row
+
+
+# --- Sandbox State ---
+
+_sandbox_proc = None
+_sandbox_log = collections.deque(maxlen=5000)
+_sandbox_project = None
+_sandbox_command = None
+_sandbox_port = None
+_sandbox_log_lock = threading.Lock()
+
+
+def _sandbox_reader(proc):
+    """Background thread: reads stdout+stderr into the ring buffer."""
+    for stream in (proc.stdout, proc.stderr):
+        if stream is None:
+            continue
+        try:
+            for line in stream:
+                decoded = line.decode("utf-8", errors="replace").rstrip("\n")
+                with _sandbox_log_lock:
+                    _sandbox_log.append(decoded)
+        except Exception:
+            pass
+
+
+def _detect_sandbox_command(project_path):
+    """Auto-detect the dev command for a project."""
+    pkg = os.path.join(project_path, "package.json")
+    if os.path.isfile(pkg):
+        try:
+            with open(pkg) as f:
+                data = json.load(f)
+            scripts = data.get("scripts", {})
+            if "dev" in scripts:
+                return "npm run dev", 3000
+            if "start" in scripts:
+                return "npm start", 3000
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if os.path.isfile(os.path.join(project_path, "manage.py")):
+        return "python manage.py runserver", 8000
+
+    for entry in ("app.py", "main.py"):
+        if os.path.isfile(os.path.join(project_path, entry)):
+            return f"python {entry}", 5000
+
+    return None, None
+
+
+def _detect_test_command(project_path):
+    """Auto-detect the test command for a project."""
+    pkg = os.path.join(project_path, "package.json")
+    if os.path.isfile(pkg):
+        try:
+            with open(pkg) as f:
+                data = json.load(f)
+            scripts = data.get("scripts", {})
+            if "test" in scripts:
+                return "npm test"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if os.path.isfile(os.path.join(project_path, "pytest.ini")) or os.path.isfile(
+        os.path.join(project_path, "pyproject.toml")
+    ):
+        return "pytest"
+
+    if os.path.isdir(os.path.join(project_path, "tests")):
+        return "pytest"
+
+    return None
 
 
 # --- MCP Server Setup ---
@@ -222,6 +298,125 @@ async def list_tools():
                 "required": ["project"],
             },
         ),
+        # --- Sandbox tools ---
+        Tool(
+            name="sandbox_start",
+            description="Start a dev server / sandbox process for a project. Auto-detects the command (npm run dev, python app.py, etc.) or accepts an override.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Project name",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Override command (e.g., 'npm run dev', 'python app.py'). Auto-detected if omitted.",
+                    },
+                },
+                "required": ["project"],
+            },
+        ),
+        Tool(
+            name="sandbox_stop",
+            description="Stop the currently running sandbox process.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="sandbox_restart",
+            description="Restart the sandbox process (stop + start with same command).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="sandbox_status",
+            description="Get the status of the sandbox process (running/stopped, PID, port, error count).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="sandbox_logs",
+            description="Get recent sandbox output. Optionally filter to errors/warnings only.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "lines": {
+                        "type": "integer",
+                        "description": "Number of lines to return (default 50).",
+                        "default": 50,
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "Filter: 'error', 'warning', or omit for all output.",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="sandbox_test",
+            description="Run the project's test suite and return results. Auto-detects test command (npm test, pytest) or accepts an override.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Override test command. Auto-detected if omitted.",
+                    },
+                },
+            },
+        ),
+        # --- Penpot tools ---
+        Tool(
+            name="penpot_list_projects",
+            description="List all Penpot projects and their files (wireframes/designs).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="penpot_get_page",
+            description="Get the structure of a Penpot file page — component names, layout frames, text content. Use to understand a wireframe design.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_id": {
+                        "type": "string",
+                        "description": "Penpot file UUID (from penpot_list_projects).",
+                    },
+                    "page": {
+                        "type": "string",
+                        "description": "Page name to get (optional — returns all pages if omitted).",
+                    },
+                },
+                "required": ["file_id"],
+            },
+        ),
+        Tool(
+            name="penpot_export_svg",
+            description="Export a Penpot page or frame as SVG. Claude can read SVG as XML to understand layouts and visual structure.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_id": {
+                        "type": "string",
+                        "description": "Penpot file UUID.",
+                    },
+                    "page": {
+                        "type": "string",
+                        "description": "Page name (optional — uses first page if omitted).",
+                    },
+                },
+                "required": ["file_id"],
+            },
+        ),
     ]
 
 
@@ -244,6 +439,24 @@ async def call_tool(name: str, arguments: dict):
             return await handle_get_detective_insights(arguments)
         elif name == "trigger_custodian":
             return await handle_trigger_custodian(arguments)
+        elif name == "sandbox_start":
+            return await handle_sandbox_start(arguments)
+        elif name == "sandbox_stop":
+            return await handle_sandbox_stop(arguments)
+        elif name == "sandbox_restart":
+            return await handle_sandbox_restart(arguments)
+        elif name == "sandbox_status":
+            return await handle_sandbox_status(arguments)
+        elif name == "sandbox_logs":
+            return await handle_sandbox_logs(arguments)
+        elif name == "sandbox_test":
+            return await handle_sandbox_test(arguments)
+        elif name == "penpot_list_projects":
+            return await handle_penpot_list_projects(arguments)
+        elif name == "penpot_get_page":
+            return await handle_penpot_get_page(arguments)
+        elif name == "penpot_export_svg":
+            return await handle_penpot_export_svg(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -561,6 +774,473 @@ async def handle_trigger_custodian(args):
         )]
     except Exception as e:
         return [TextContent(type="text", text=f"Failed to start custodian: {e}")]
+
+
+# --- Sandbox Handlers ---
+
+
+async def handle_sandbox_start(args):
+    global _sandbox_proc, _sandbox_project, _sandbox_command, _sandbox_port
+
+    project_name = args["project"]
+    command_override = args.get("command")
+
+    log_query("sandbox_start", project_name, args)
+
+    # Stop existing sandbox if running
+    if _sandbox_proc and _sandbox_proc.poll() is None:
+        _sandbox_proc.terminate()
+        try:
+            _sandbox_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _sandbox_proc.kill()
+
+    conn = get_db()
+    project = get_project_by_name(conn, project_name)
+    conn.close()
+
+    if not project:
+        return [TextContent(type="text", text=f"Project '{project_name}' not found.")]
+
+    project_path = project["path"]
+    if not os.path.isdir(project_path):
+        return [TextContent(type="text", text=f"Project path not found: {project_path}")]
+
+    if command_override:
+        command = command_override
+        port = None
+    else:
+        command, port = _detect_sandbox_command(project_path)
+        if not command:
+            return [TextContent(
+                type="text",
+                text=f"Could not auto-detect dev command for '{project_name}'. "
+                     "Pass a 'command' argument (e.g., 'npm run dev').",
+            )]
+
+    _sandbox_log.clear()
+    _sandbox_project = project_name
+    _sandbox_command = command
+    _sandbox_port = port
+
+    try:
+        # Use shell=True so commands like "npm run dev" work
+        _sandbox_proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=project_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Start background reader thread
+        reader = threading.Thread(target=_sandbox_reader, args=(_sandbox_proc,), daemon=True)
+        reader.start()
+
+        # Update DB
+        conn = get_db()
+        conn.execute("DELETE FROM sandbox_state WHERE project_id = ?", (project["id"],))
+        conn.execute(
+            "INSERT INTO sandbox_state (project_id, command, pid, port, status) VALUES (?, ?, ?, ?, 'running')",
+            (project["id"], command, _sandbox_proc.pid, port),
+        )
+        conn.commit()
+        conn.close()
+
+        port_info = f" on port {port}" if port else ""
+        return [TextContent(
+            type="text",
+            text=f"Started `{command}`{port_info} (PID {_sandbox_proc.pid}) for {project_name}.",
+        )]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Failed to start sandbox: {e}")]
+
+
+async def handle_sandbox_stop(args):
+    global _sandbox_proc, _sandbox_project, _sandbox_command, _sandbox_port
+
+    log_query("sandbox_stop")
+
+    if not _sandbox_proc or _sandbox_proc.poll() is not None:
+        return [TextContent(type="text", text="No sandbox is running.")]
+
+    try:
+        _sandbox_proc.terminate()
+        try:
+            _sandbox_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _sandbox_proc.kill()
+
+        # Update DB
+        if _sandbox_project:
+            conn = get_db()
+            project = get_project_by_name(conn, _sandbox_project)
+            if project:
+                conn.execute(
+                    "UPDATE sandbox_state SET status = 'stopped', pid = NULL WHERE project_id = ?",
+                    (project["id"],),
+                )
+                conn.commit()
+            conn.close()
+
+        name = _sandbox_project or "unknown"
+        _sandbox_proc = None
+        _sandbox_project = None
+        _sandbox_command = None
+        _sandbox_port = None
+
+        return [TextContent(type="text", text=f"Stopped sandbox for {name}.")]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error stopping sandbox: {e}")]
+
+
+async def handle_sandbox_restart(args):
+    log_query("sandbox_restart")
+
+    if not _sandbox_project or not _sandbox_command:
+        return [TextContent(type="text", text="No sandbox to restart. Use sandbox_start first.")]
+
+    project_name = _sandbox_project
+    command = _sandbox_command
+
+    # Stop
+    await handle_sandbox_stop({})
+
+    # Start again with same settings
+    return await handle_sandbox_start({"project": project_name, "command": command})
+
+
+async def handle_sandbox_status(args):
+    log_query("sandbox_status")
+
+    if not _sandbox_proc:
+        return [TextContent(type="text", text=json.dumps({
+            "status": "stopped",
+            "project": None,
+            "command": None,
+        }))]
+
+    running = _sandbox_proc.poll() is None
+
+    with _sandbox_log_lock:
+        error_count = sum(
+            1 for line in _sandbox_log
+            if "error" in line.lower() and "warning" not in line.lower()
+        )
+        warning_count = sum(1 for line in _sandbox_log if "warning" in line.lower())
+        log_lines = len(_sandbox_log)
+
+    result = {
+        "status": "running" if running else f"exited (code {_sandbox_proc.returncode})",
+        "project": _sandbox_project,
+        "command": _sandbox_command,
+        "pid": _sandbox_proc.pid if running else None,
+        "port": _sandbox_port,
+        "log_lines": log_lines,
+        "errors": error_count,
+        "warnings": warning_count,
+    }
+
+    return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+async def handle_sandbox_logs(args):
+    lines_count = args.get("lines", 50)
+    log_filter = args.get("filter")
+
+    log_query("sandbox_logs", _sandbox_project, args)
+
+    with _sandbox_log_lock:
+        all_lines = list(_sandbox_log)
+
+    if log_filter == "error":
+        all_lines = [l for l in all_lines if "error" in l.lower()]
+    elif log_filter == "warning":
+        all_lines = [l for l in all_lines if "warning" in l.lower()]
+
+    tail = all_lines[-lines_count:]
+
+    result = {
+        "project": _sandbox_project,
+        "total_lines": len(all_lines),
+        "showing": len(tail),
+        "filter": log_filter,
+        "output": "\n".join(tail),
+    }
+
+    return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+async def handle_sandbox_test(args):
+    command_override = args.get("command")
+
+    log_query("sandbox_test", _sandbox_project, args)
+
+    # Determine project path
+    project_path = None
+    if _sandbox_project:
+        conn = get_db()
+        project = get_project_by_name(conn, _sandbox_project)
+        conn.close()
+        if project:
+            project_path = project["path"]
+
+    if not project_path:
+        return [TextContent(
+            type="text",
+            text="No project context. Start a sandbox first or specify a project.",
+        )]
+
+    if command_override:
+        command = command_override
+    else:
+        command = _detect_test_command(project_path)
+        if not command:
+            return [TextContent(
+                type="text",
+                text="Could not auto-detect test command. Pass a 'command' argument.",
+            )]
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        output = {
+            "command": command,
+            "exit_code": result.returncode,
+            "passed": result.returncode == 0,
+            "stdout": result.stdout[-3000:] if len(result.stdout) > 3000 else result.stdout,
+            "stderr": result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr,
+        }
+
+        return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+    except subprocess.TimeoutExpired:
+        return [TextContent(type="text", text="Test command timed out after 120 seconds.")]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Failed to run tests: {e}")]
+
+
+# --- Penpot Helpers ---
+
+PENPOT_BASE = os.environ.get("PENPOT_URL", "http://localhost:9001")
+PENPOT_EMAIL = os.environ.get("PENPOT_EMAIL", "admin@local.dev")
+PENPOT_PASSWORD = os.environ.get("PENPOT_PASSWORD", "admin123")
+
+_penpot_session = None
+
+
+def _penpot_rpc(command, payload=None):
+    """Call a Penpot RPC command. Auto-authenticates on first call."""
+    global _penpot_session
+
+    try:
+        import requests
+    except ImportError:
+        raise RuntimeError("requests library required for Penpot tools: pip install requests")
+
+    if _penpot_session is None:
+        _penpot_session = requests.Session()
+        resp = _penpot_session.post(
+            f"{PENPOT_BASE}/api/rpc/command/login-with-password",
+            json={"email": PENPOT_EMAIL, "password": PENPOT_PASSWORD},
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            _penpot_session = None
+            raise RuntimeError(f"Penpot login failed ({resp.status_code}): {resp.text[:200]}")
+
+    resp = _penpot_session.post(
+        f"{PENPOT_BASE}/api/rpc/command/{command}",
+        json=payload or {},
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        # Session may have expired — retry once
+        _penpot_session = None
+        return _penpot_rpc(command, payload)
+
+    return resp.json()
+
+
+def _extract_shape_info(shape):
+    """Extract useful info from a Penpot shape object."""
+    info = {
+        "name": shape.get("name", ""),
+        "type": shape.get("type", ""),
+    }
+    # Include text content if it's a text shape
+    content = shape.get("content")
+    if content and isinstance(content, dict):
+        # Penpot text content is nested: content.children[].children[].text
+        texts = []
+        for para in content.get("children", []):
+            for span in para.get("children", []):
+                if "text" in span:
+                    texts.append(span["text"])
+        if texts:
+            info["text"] = " ".join(texts)
+    return info
+
+
+# --- Penpot Handlers ---
+
+
+async def handle_penpot_list_projects(args):
+    log_query("penpot_list_projects")
+    try:
+        projects_data = _penpot_rpc("get-all-projects")
+        results = []
+        for proj in projects_data:
+            proj_id = proj["id"]
+            files = _penpot_rpc("get-project-files", {"project-id": proj_id})
+            results.append({
+                "id": proj_id,
+                "name": proj.get("name", ""),
+                "files": [
+                    {"id": f["id"], "name": f.get("name", ""), "modified": f.get("modified-at", "")}
+                    for f in files
+                ],
+            })
+        return [TextContent(type="text", text=json.dumps(results, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Penpot error: {e}")]
+
+
+async def handle_penpot_get_page(args):
+    file_id = args["file_id"]
+    page_name = args.get("page")
+
+    log_query("penpot_get_page", None, args)
+    try:
+        file_data = _penpot_rpc("get-file", {"id": file_id})
+        data = file_data.get("data", {})
+        pages_index = data.get("pages-index", {})
+
+        results = []
+        for page_id, page_obj in pages_index.items():
+            name = page_obj.get("name", "")
+            if page_name and page_name.lower() != name.lower():
+                continue
+
+            objects = page_obj.get("objects", {})
+            shapes = []
+            for obj_id, shape in objects.items():
+                info = _extract_shape_info(shape)
+                if info["name"] or info.get("text"):
+                    shapes.append(info)
+
+            results.append({
+                "page_id": page_id,
+                "name": name,
+                "shape_count": len(objects),
+                "components": shapes[:100],  # Cap at 100 to avoid huge responses
+            })
+
+        if not results:
+            return [TextContent(
+                type="text",
+                text=f"No pages found{' matching ' + repr(page_name) if page_name else ''}.",
+            )]
+
+        return [TextContent(type="text", text=json.dumps(results, indent=2))]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Penpot error: {e}")]
+
+
+async def handle_penpot_export_svg(args):
+    file_id = args["file_id"]
+    page_name = args.get("page")
+
+    log_query("penpot_export_svg", None, args)
+    try:
+        file_data = _penpot_rpc("get-file", {"id": file_id})
+        data = file_data.get("data", {})
+        pages_index = data.get("pages-index", {})
+
+        # Find target page
+        target_page_id = None
+        target_page = None
+        for page_id, page_obj in pages_index.items():
+            name = page_obj.get("name", "")
+            if page_name:
+                if page_name.lower() == name.lower():
+                    target_page_id = page_id
+                    target_page = page_obj
+                    break
+            else:
+                # Use first page
+                target_page_id = page_id
+                target_page = page_obj
+                break
+
+        if not target_page:
+            return [TextContent(
+                type="text",
+                text=f"Page not found{' matching ' + repr(page_name) if page_name else ''}.",
+            )]
+
+        # Build a simplified SVG from the shape data
+        objects = target_page.get("objects", {})
+        svg_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+
+        # Find the root frame to get dimensions
+        root = objects.get("00000000-0000-0000-0000-000000000000", {})
+        width = root.get("width", 1920)
+        height = root.get("height", 1080)
+
+        svg_parts.append(
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
+        )
+
+        for obj_id, shape in objects.items():
+            stype = shape.get("type", "")
+            name = shape.get("name", "")
+            x = shape.get("x", 0)
+            y = shape.get("y", 0)
+            w = shape.get("width", 0)
+            h = shape.get("height", 0)
+
+            if stype == "frame":
+                svg_parts.append(
+                    f'  <rect x="{x}" y="{y}" width="{w}" height="{h}" '
+                    f'fill="none" stroke="#999" data-name="{name}"/>'
+                )
+            elif stype == "rect":
+                fill = "#ccc"
+                fills = shape.get("fills", [])
+                if fills and isinstance(fills, list) and fills[0].get("color"):
+                    fill = fills[0]["color"]
+                svg_parts.append(
+                    f'  <rect x="{x}" y="{y}" width="{w}" height="{h}" '
+                    f'fill="{fill}" data-name="{name}"/>'
+                )
+            elif stype == "text":
+                info = _extract_shape_info(shape)
+                text = info.get("text", name)
+                svg_parts.append(
+                    f'  <text x="{x}" y="{y + 16}" font-size="14" '
+                    f'data-name="{name}">{text}</text>'
+                )
+
+        svg_parts.append("</svg>")
+        svg_output = "\n".join(svg_parts)
+
+        return [TextContent(type="text", text=svg_output)]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Penpot error: {e}")]
 
 
 async def main():

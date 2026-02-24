@@ -94,22 +94,33 @@ rm -rf /tmp/nai-workbench
 waveterm
 ```
 
-All 8 sidebar widgets should appear and work:
+You should see 4 sidebar widgets:
 
 | Widget | Type | What it does |
 |--------|------|-------------|
-| **WSL** | SSH terminal | Shell on the PC |
-| **Dashboard** | SSH terminal | Textual TUI dashboard |
-| **Claude** | SSH terminal | Project picker → Claude CLI |
-| **Test** | SSH terminal | Test pipeline |
-| **Whiteboard** | Web (9001) | Penpot design tool |
-| **Komodo** | Web (9090) | Docker/system dashboard |
-| **Import** | SSH terminal | Clone repos into ~/projects |
-| **VS Code** | Web (9091) | code-server IDE |
+| **Editor** | SSH terminal | Custodian Editor — project picker → Claude CLI with MCP tools |
+| **Admin** | SSH terminal | Custodian Admin TUI — 6 tabs (Projects, Custodian, Fossils, Detective, Status, Editor) |
+| **Penpot** | Web (9001) | Penpot design tool (wireframes) |
+| **Terminal** | SSH terminal | Raw shell on the PC |
+
+### Custodian MCP Setup (one-time)
+
+The Editor launches Claude CLI with 17 MCP tools (custodian knowledge, sandbox, Penpot). For MCP to work, register the custodian server on the PC's WSL:
+
+```bash
+# SSH into the PC first
+ssh -p 2222 dev@100.95.20.98
+
+# Register custodian MCP at user scope (works from any project directory)
+claude mcp add-json --scope user custodian '{"command":"/home/dev/.custodian-venv/bin/python3","args":["/home/dev/projects/nai-workbench/custodian/mcp_server.py"],"env":{"PYTHONPATH":"/home/dev/projects/nai-workbench/custodian"}}'
+
+# Verify
+claude mcp list
+```
 
 ## Step 6 — Penpot Login
 
-Open Whiteboard widget or navigate to `http://100.95.20.98:9001`:
+Open Penpot widget or navigate to `http://100.95.20.98:9001`:
 - Email: `admin@local.dev`
 - Password: `admin123`
 

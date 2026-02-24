@@ -1,55 +1,31 @@
 {
-  "wsl-terminal": {
-    "icon": "brands@linux",
-    "label": "WSL",
-    "color": "#4ade80",
-    "blockdef": {
-      "meta": {
-        "view": "term",
-        "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP"
-      }
-    }
-  },
-  "dashboard": {
-    "icon": "gauge-high",
-    "label": "Dashboard",
-    "color": "#ff9800",
-    "blockdef": {
-      "meta": {
-        "view": "term",
-        "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/launch-dashboard"
-      }
-    }
-  },
-  "claude-cli": {
-    "icon": "robot",
-    "label": "Claude",
+  "editor": {
+    "icon": "code",
+    "label": "Editor",
     "color": "#d97706",
     "blockdef": {
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/claude-session"
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/editor-session"
       }
     }
   },
-  "test-project": {
-    "icon": "flask-vial",
-    "label": "Test",
-    "color": "#22d3ee",
+  "admin-01": {
+    "icon": "shield-halved",
+    "label": "Admin",
+    "color": "#ef4444",
     "blockdef": {
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/test-project"
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/admin-session"
       }
     }
   },
   "penpot": {
     "icon": "pen-nib",
-    "label": "Whiteboard",
+    "label": "Penpot",
     "color": "#6c63ff",
     "blockdef": {
       "meta": {
@@ -59,51 +35,15 @@
       }
     }
   },
-  "komodo": {
-    "icon": "gauge",
-    "label": "Komodo",
-    "color": "#fbbf24",
-    "blockdef": {
-      "meta": {
-        "view": "web",
-        "url": "http://TAILSCALE_IP:9090",
-        "pinnedurl": "http://TAILSCALE_IP:9090"
-      }
-    }
-  },
-  "import-project": {
-    "icon": "download",
-    "label": "Import",
-    "color": "#38bdf8",
+  "wsl-terminal": {
+    "icon": "brands@linux",
+    "label": "Terminal",
+    "color": "#4ade80",
     "blockdef": {
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/import-project"
-      }
-    }
-  },
-  "code-server": {
-    "icon": "code",
-    "label": "VS Code",
-    "color": "#f87171",
-    "blockdef": {
-      "meta": {
-        "view": "web",
-        "url": "http://TAILSCALE_IP:9091",
-        "pinnedurl": "http://TAILSCALE_IP:9091"
-      }
-    }
-  },
-  "admin-01": {
-    "icon": "shield-halved",
-    "label": "ADMIN 01",
-    "color": "#ef4444",
-    "blockdef": {
-      "meta": {
-        "view": "term",
-        "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/admin-session"
+        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP"
       }
     }
   }

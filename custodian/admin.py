@@ -39,12 +39,31 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
     TextArea,
+    Tree,
 )
 from textual.binding import Binding
 from textual import work
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custodian.db")
 PROJECTS_DIR = os.path.expanduser("~/projects")
+
+# Detect WSL and provide path translation
+import platform as _platform
+_IS_WSL = (_platform.system() == "Linux"
+           and os.path.exists("/proc/version")
+           and "microsoft" in open("/proc/version").read().lower())
+
+
+def _to_native_path(path):
+    """Convert Windows paths to WSL /mnt/ paths when running in WSL."""
+    if not _IS_WSL or not path:
+        return path
+    m = re.match(r"^([A-Za-z]):[/\\](.*)$", path)
+    if m:
+        drive = m.group(1).lower()
+        rest = m.group(2).replace("\\", "/")
+        return f"/mnt/{drive}/{rest}"
+    return path
 
 # System prompt injected into every Editor Claude session so it knows about
 # the fossil system, MCP tools, and registered projects — same architecture
@@ -296,7 +315,7 @@ Screen {
 }
 
 #project-log {
-    height: 1fr;
+    height: 12;
     border: solid $primary;
     margin-top: 1;
 }
@@ -428,6 +447,51 @@ DataTable {
     color: $text-muted;
     padding: 0 0 1 0;
 }
+
+#projects-split {
+    height: 30;
+}
+
+#cards-panel {
+    width: 35;
+    overflow-y: auto;
+}
+
+#hierarchy-panel {
+    width: 1fr;
+    border-left: solid $primary;
+}
+
+#hierarchy-tree {
+    height: 1fr;
+}
+
+#hierarchy-placeholder {
+    color: $text-muted;
+    padding: 1;
+}
+
+.project-card {
+    margin: 0 1 1 0;
+    padding: 1;
+    border: solid $primary;
+    height: auto;
+    min-width: 30;
+    text-align: left;
+}
+
+.project-card.indexed {
+    border: solid green;
+}
+
+.project-card.not-indexed {
+    border: solid gray;
+}
+
+.project-card.selected {
+    border: double $accent;
+    background: $surface-lighten-1;
+}
 """
 
 
@@ -451,10 +515,14 @@ class CustodianAdmin(App):
         super().__init__()
         self._projects = []
         self._selected_project_id = None
+        self._selected_card_project_id = None
+        self._card_gen = 0
         self._gh_repos = []
         # Editor tab state
         self._editor_current_file: str | None = None
         self._editor_modified: bool = False
+        self._editor_project_name: str | None = None
+        self._editor_project_path: str | None = None
         self._claude_session_id: str | None = None
         self._claude_process: subprocess.Popen | None = None
         self._claude_running: bool = False
@@ -469,7 +537,22 @@ class CustodianAdmin(App):
         with TabbedContent("Projects", "Custodian", "Fossils", "Detective", "Status", "Editor"):
             # ── Projects Tab ─────────────────────────────────
             with TabPane("Projects", id="tab-projects"):
-                with Vertical(classes="tab-content"):
+                with VerticalScroll(classes="tab-content"):
+                    yield Static("Your Projects", classes="section-header")
+                    with Horizontal(id="projects-split"):
+                        # Left: scrollable project cards
+                        with VerticalScroll(id="cards-panel"):
+                            pass  # Cards populated dynamically in _refresh_project_cards()
+                        # Right: hierarchy tree
+                        with Vertical(id="hierarchy-panel"):
+                            yield Static("Click a project to view its map", id="hierarchy-placeholder")
+                            yield Tree("Projects", id="hierarchy-tree")
+
+                    with Horizontal(classes="action-bar"):
+                        yield Button("Remove Selected", variant="error", id="btn-remove-project")
+                        yield Button("Reactivate", variant="default", id="btn-reactivate-project")
+                        yield Button("Open in Editor", variant="primary", id="btn-card-to-editor")
+
                     yield Static("Import from GitHub", classes="section-header")
                     yield Static(
                         f"Projects clone to: {PROJECTS_DIR}/",
@@ -478,14 +561,8 @@ class CustodianAdmin(App):
                     with Horizontal(classes="action-bar"):
                         yield Button("Fetch My Repos", variant="primary", id="btn-fetch-gh")
                         yield Button("Import Selected", variant="success", id="btn-clone-gh")
+                        yield Button("Import All", variant="warning", id="btn-import-all-gh")
                     yield DataTable(id="gh-repos-table")
-
-                    yield Static("Registered Projects", classes="section-header")
-                    yield DataTable(id="projects-table")
-
-                    with Horizontal(classes="action-bar"):
-                        yield Button("Remove Selected", variant="error", id="btn-remove-project")
-                        yield Button("Reactivate", variant="default", id="btn-reactivate-project")
 
                     yield Static("Log", classes="section-header")
                     yield RichLog(id="project-log", highlight=True, markup=True)
@@ -557,6 +634,14 @@ class CustodianAdmin(App):
             # ── Editor Tab ────────────────────────────────────
             with TabPane("Editor", id="tab-editor"):
                 with Vertical(classes="tab-content"):
+                    with Horizontal(classes="action-bar"):
+                        yield Select(
+                            [],
+                            prompt="Select project...",
+                            id="editor-project-select",
+                            classes="project-selector",
+                        )
+                        yield Button("Open Project", variant="primary", id="btn-open-project")
                     with Horizontal(id="editor-panel"):
                         yield WorkbenchDirectoryTree(
                             self._workbench_path,
@@ -595,6 +680,11 @@ class CustodianAdmin(App):
 
     def on_mount(self) -> None:
         """Initialize data on mount."""
+        # Hide hierarchy tree until a card is clicked
+        try:
+            self.query_one("#hierarchy-tree", Tree).display = False
+        except Exception:
+            pass
         self._load_projects()
         self._refresh_projects_tab()
         self._refresh_custodian_tab()
@@ -608,7 +698,7 @@ class CustodianAdmin(App):
         self._projects = get_projects()
         options = [(p["name"], p["id"]) for p in self._projects]
 
-        for select_id in ["custodian-project-select", "fossil-project-select", "detective-project-select"]:
+        for select_id in ["custodian-project-select", "fossil-project-select", "detective-project-select", "editor-project-select"]:
             try:
                 select = self.query_one(f"#{select_id}", Select)
                 select.set_options(options)
@@ -618,15 +708,31 @@ class CustodianAdmin(App):
     # ── Projects Tab ──────────────────────────────────────────────────
 
     def _refresh_projects_tab(self):
-        """Refresh the registered projects table."""
-        table = self.query_one("#projects-table", DataTable)
-        table.clear(columns=True)
-        table.add_columns("ID", "Name", "Path", "Stack", "Status", "Last Indexed", "Fossils")
-        table.cursor_type = "row"
+        """Refresh the projects tab — cards + hierarchy."""
+        self._refresh_project_cards()
+
+    def _refresh_project_cards(self):
+        """Build project cards inside #cards-panel."""
+        try:
+            panel = self.query_one("#cards-panel", VerticalScroll)
+        except Exception:
+            return
+
+        # Remove existing card buttons (fire-and-forget async removal)
+        for child in list(panel.children):
+            child.remove()
+
+        # Increment generation so new IDs never collide with still-removing widgets
+        self._card_gen += 1
+        gen = self._card_gen
 
         conn = get_db()
         rows = conn.execute(
-            """SELECT p.*, COUNT(f.id) as fossil_count
+            """SELECT p.id, p.name, p.stack, p.status, p.last_indexed,
+                      COUNT(f.id) as fossil_count,
+                      (SELECT COUNT(*) FROM symbols s
+                       JOIN fossils f2 ON s.fossil_id = f2.id
+                       WHERE f2.project_id = p.id) as symbol_count
                FROM projects p
                LEFT JOIN fossils f ON f.project_id = p.id
                GROUP BY p.id
@@ -635,17 +741,190 @@ class CustodianAdmin(App):
         conn.close()
 
         for r in rows:
-            indexed = r["last_indexed"] or "never"
+            pid = r["id"]
+            name = r["name"]
+            stack = r["stack"] or "unknown stack"
+            indexed = r["last_indexed"]
+            fossils = r["fossil_count"]
+            symbols = r["symbol_count"]
             status = r["status"]
-            table.add_row(
-                str(r["id"]),
-                r["name"],
-                r["path"],
-                r["stack"] or "",
-                status,
-                indexed,
-                str(r["fossil_count"]),
+
+            if indexed:
+                # Show short date
+                date_short = indexed[:10] if len(indexed) >= 10 else indexed
+                status_line = f"[green]\u25cf Indexed: {date_short}[/green]"
+                css_class = "project-card indexed"
+            else:
+                status_line = "[dim]\u25cb Never indexed[/dim]"
+                css_class = "project-card not-indexed"
+
+            if status == "inactive":
+                status_line += "  [yellow](inactive)[/yellow]"
+
+            label = (
+                f"[bold]{name}[/bold]\n"
+                f"{stack}\n"
+                f"{status_line}\n"
+                f"Fossils: {fossils} \u00b7 Symbols: {symbols}"
             )
+
+            btn = Button(label, id=f"btn-card-{gen}-{pid}", variant="default")
+            btn.add_class(*css_class.split())
+            panel.mount(btn)
+
+        # Re-highlight selected card if still present
+        if self._selected_card_project_id is not None:
+            self._highlight_selected_card(self._selected_card_project_id)
+
+    def _highlight_selected_card(self, project_id):
+        """Visually highlight the selected project card."""
+        try:
+            panel = self.query_one("#cards-panel", VerticalScroll)
+        except Exception:
+            return
+
+        for child in panel.children:
+            if hasattr(child, "id") and child.id and child.id.startswith("btn-card-"):
+                child.remove_class("selected")
+                # ID format: btn-card-{gen}-{pid}
+                if child.id.endswith(f"-{project_id}"):
+                    child.add_class("selected")
+
+    def _populate_hierarchy_tree(self, project_id):
+        """Build the hierarchy tree for a project from fossil data."""
+        try:
+            tree_widget = self.query_one("#hierarchy-tree", Tree)
+            placeholder = self.query_one("#hierarchy-placeholder", Static)
+        except Exception:
+            return
+
+        tree_widget.clear()
+        placeholder.display = False
+        tree_widget.display = True
+
+        conn = get_db()
+
+        # Get project name
+        proj = conn.execute(
+            "SELECT name FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not proj:
+            conn.close()
+            return
+
+        project_name = proj["name"]
+        tree_widget.root.set_label(project_name)
+
+        # Get latest fossil
+        fossil = conn.execute(
+            """SELECT id, file_tree, dependencies, known_issues
+               FROM fossils WHERE project_id = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (project_id,),
+        ).fetchone()
+
+        if not fossil:
+            tree_widget.root.add_leaf("Not indexed yet \u2014 use Custodian tab to index this project")
+            tree_widget.root.expand()
+            conn.close()
+            return
+
+        fossil_id = fossil["id"]
+
+        # Get symbols grouped by type
+        symbols = conn.execute(
+            """SELECT type, name, file_path, signature, description
+               FROM symbols WHERE fossil_id = ?
+               ORDER BY type, name""",
+            (fossil_id,),
+        ).fetchall()
+        conn.close()
+
+        # Group symbols by type
+        sym_groups = {}
+        for sym in symbols:
+            stype = sym["type"]
+            if stype not in sym_groups:
+                sym_groups[stype] = []
+            sym_groups[stype].append(sym)
+
+        # Type display order and labels
+        type_labels = {
+            "component": "Components",
+            "class": "Classes",
+            "function": "Functions",
+            "hook": "Hooks",
+            "store": "Stores",
+            "route": "Routes",
+            "type": "Types/Interfaces",
+        }
+
+        for stype, label in type_labels.items():
+            if stype in sym_groups:
+                group = sym_groups[stype]
+                branch = tree_widget.root.add(f"{label} ({len(group)})")
+                for sym in group:
+                    desc = sym["description"] or sym["file_path"] or ""
+                    if desc:
+                        branch.add_leaf(f"{sym['name']} \u2014 {desc}")
+                    else:
+                        branch.add_leaf(sym["name"])
+
+        # Any remaining types not in the ordered list
+        for stype, group in sym_groups.items():
+            if stype not in type_labels:
+                branch = tree_widget.root.add(f"{stype.title()} ({len(group)})")
+                for sym in group:
+                    desc = sym["description"] or sym["file_path"] or ""
+                    if desc:
+                        branch.add_leaf(f"{sym['name']} \u2014 {desc}")
+                    else:
+                        branch.add_leaf(sym["name"])
+
+        # Dependencies
+        if fossil["dependencies"]:
+            try:
+                deps = json.loads(fossil["dependencies"])
+                if deps:
+                    dep_branch = tree_widget.root.add(f"Dependencies ({len(deps)})")
+                    for dep in deps:
+                        if isinstance(dep, dict):
+                            name = dep.get("name", "?")
+                            version = dep.get("version", "")
+                            purpose = dep.get("purpose", "")
+                            label = f"{name} {version}".strip()
+                            if purpose:
+                                label += f" \u2014 {purpose}"
+                            dep_branch.add_leaf(label)
+                        else:
+                            dep_branch.add_leaf(str(dep))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Known issues
+        if fossil["known_issues"]:
+            issues_text = fossil["known_issues"]
+            try:
+                issues = json.loads(issues_text)
+                if issues:
+                    issue_branch = tree_widget.root.add("Known Issues")
+                    for issue in issues:
+                        if isinstance(issue, dict):
+                            issue_branch.add_leaf(issue.get("description", str(issue)))
+                        else:
+                            issue_branch.add_leaf(str(issue))
+            except (json.JSONDecodeError, TypeError):
+                # Plain text — split by lines
+                lines = [l.strip() for l in issues_text.strip().split("\n") if l.strip()]
+                if lines:
+                    issue_branch = tree_widget.root.add("Known Issues")
+                    for line in lines:
+                        # Strip leading bullet chars
+                        line = line.lstrip("- \u2022*")
+                        if line:
+                            issue_branch.add_leaf(line)
+
+        tree_widget.root.expand()
 
     def _refresh_gh_repos_table(self, repos):
         """Populate the GitHub repos table."""
@@ -690,6 +969,7 @@ class CustodianAdmin(App):
         table = self.query_one("#fossil-table", DataTable)
         table.clear(columns=True)
         table.add_columns("ID", "Project", "Version", "Date", "Summary")
+        table.cursor_type = "row"
 
         fossils = get_fossils(project_id)
         for f in fossils[:50]:
@@ -707,6 +987,7 @@ class CustodianAdmin(App):
         table = self.query_one("#insight-table", DataTable)
         table.clear(columns=True)
         table.add_columns("ID", "Project", "Type", "Date", "Content Preview")
+        table.cursor_type = "row"
 
         insights = get_insights(project_id)
         for i in insights:
@@ -777,30 +1058,61 @@ class CustodianAdmin(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
 
-        # Projects tab
-        if button_id == "btn-fetch-gh":
+        # Projects tab — "Open in Editor" must be checked before generic btn-card- pattern
+        if button_id == "btn-card-to-editor":
+            if self._selected_card_project_id:
+                try:
+                    select = self.query_one("#editor-project-select", Select)
+                    select.value = self._selected_card_project_id
+                except Exception:
+                    pass
+                self._open_editor_project(self._selected_card_project_id)
+                tabbed = self.query_one(TabbedContent)
+                tabbed.active = "tab-editor"
+            else:
+                self.notify("Select a project card first", severity="warning")
+        # Projects tab — card clicks
+        elif button_id and button_id.startswith("btn-card-"):
+            # ID format: btn-card-{gen}-{pid}
+            project_id = int(button_id.split("-")[-1])
+            self._selected_card_project_id = project_id
+            self._highlight_selected_card(project_id)
+            self._populate_hierarchy_tree(project_id)
+        elif button_id == "btn-fetch-gh":
             self._do_fetch_gh_repos()
         elif button_id == "btn-clone-gh":
             # Capture cursor on main thread before dispatching to worker
             table = self.query_one("#gh-repos-table", DataTable)
             row_idx = table.cursor_row
             self._do_clone_gh_repo(row_idx)
+        elif button_id == "btn-import-all-gh":
+            self._do_import_all_gh_repos()
         elif button_id == "btn-remove-project":
             self._do_remove_project()
         elif button_id == "btn-reactivate-project":
             self._do_reactivate_project()
         # Custodian tab
         elif button_id == "btn-index":
-            self._do_index_project()
+            select = self.query_one("#custodian-project-select", Select)
+            self._do_index_project(select.value)
         elif button_id == "btn-index-all":
             self._do_index_all()
         # Detective tab
         elif button_id == "btn-detective-quick":
-            self._do_detective("sonnet")
+            det_select = self.query_one("#detective-project-select", Select)
+            self._do_detective("sonnet", det_select.value)
         elif button_id == "btn-detective-deep":
-            self._do_detective("opus")
+            det_select = self.query_one("#detective-project-select", Select)
+            self._do_detective("opus", det_select.value)
         elif button_id == "btn-refine-prompt":
             self._do_refine_prompt()
+        # Editor tab — project
+        elif button_id == "btn-open-project":
+            select = self.query_one("#editor-project-select", Select)
+            if isinstance(select.value, int):
+                self._open_editor_project(select.value)
+            else:
+                self.notify("Select a project first", severity="warning")
         # Editor tab — git
         elif button_id == "btn-git-push":
             self._do_git_commit_push()
@@ -919,6 +1231,7 @@ class CustodianAdmin(App):
         """Fetch GitHub repos via gh CLI."""
         log = self.query_one("#project-log", RichLog)
         log.write("[bold blue]Fetching GitHub repos...[/bold blue]")
+        self.call_from_thread(self.notify, "Fetching repos from GitHub...")
 
         try:
             result = subprocess.run(
@@ -927,18 +1240,23 @@ class CustodianAdmin(App):
             )
             if result.returncode != 0:
                 log.write(f"[red]gh failed: {result.stderr.strip()}[/red]")
+                self.call_from_thread(self.notify, f"gh failed: {result.stderr.strip()[:60]}", severity="error")
                 return
 
             self._gh_repos = json.loads(result.stdout)
             log.write(f"[green]Found {len(self._gh_repos)} repos[/green]")
             self.call_from_thread(self._refresh_gh_repos_table, self._gh_repos)
+            self.call_from_thread(self.notify, f"Found {len(self._gh_repos)} repos — select one and click Import")
 
         except FileNotFoundError:
             log.write("[red]gh CLI not found. Install: https://cli.github.com[/red]")
+            self.call_from_thread(self.notify, "gh CLI not found", severity="error")
         except subprocess.TimeoutExpired:
             log.write("[red]Timed out fetching repos[/red]")
+            self.call_from_thread(self.notify, "Timed out fetching repos", severity="error")
         except Exception as e:
             log.write(f"[red]Error: {e}[/red]")
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
 
     @work(thread=True)
     def _do_clone_gh_repo(self, row_idx):
@@ -947,10 +1265,12 @@ class CustodianAdmin(App):
 
         if not self._gh_repos:
             log.write("[red]Fetch repos first (click 'Fetch My Repos')[/red]")
+            self.call_from_thread(self.notify, "Fetch repos first!", severity="warning")
             return
 
         if row_idx is None or row_idx < 0 or row_idx >= len(self._gh_repos):
             log.write(f"[red]Invalid selection (row {row_idx}, have {len(self._gh_repos)} repos). Click a repo row first.[/red]")
+            self.call_from_thread(self.notify, "Select a repo row first", severity="warning")
             return
 
         repo = self._gh_repos[row_idx]
@@ -961,10 +1281,12 @@ class CustodianAdmin(App):
         target = os.path.join(PROJECTS_DIR, repo_name)
 
         log.write(f"[bold]Selected: {repo_full} → {target}[/bold]")
+        self.call_from_thread(self.notify, f"Importing {repo_name}...")
 
         if os.path.isdir(target):
             log.write(f"[yellow]{repo_name} already exists at {target}[/yellow]")
             log.write("[bold]Pulling latest...[/bold]")
+            self.call_from_thread(self.notify, f"{repo_name} exists — pulling latest...")
             try:
                 result = subprocess.run(
                     ["git", "-C", target, "pull"],
@@ -973,8 +1295,10 @@ class CustodianAdmin(App):
                 log.write(result.stdout.strip() or result.stderr.strip() or "Up to date")
             except Exception as e:
                 log.write(f"[red]Pull failed: {e}[/red]")
+                self.call_from_thread(self.notify, f"Pull failed: {e}", severity="error")
         else:
             log.write(f"[bold blue]Cloning {repo_url}...[/bold blue]")
+            self.call_from_thread(self.notify, f"Cloning {repo_name}... (this may take a moment)")
             try:
                 os.makedirs(PROJECTS_DIR, exist_ok=True)
                 result = subprocess.run(
@@ -990,14 +1314,17 @@ class CustodianAdmin(App):
 
                 if result.returncode != 0:
                     log.write("[bold red]Clone failed![/bold red]")
+                    self.call_from_thread(self.notify, "Clone failed!", severity="error")
                     return
 
                 log.write(f"[green]Cloned to {target}[/green]")
             except subprocess.TimeoutExpired:
                 log.write("[red]Clone timed out (120s)[/red]")
+                self.call_from_thread(self.notify, "Clone timed out (120s)", severity="error")
                 return
             except Exception as e:
                 log.write(f"[red]Clone error: {type(e).__name__}: {e}[/red]")
+                self.call_from_thread(self.notify, f"Clone error: {e}", severity="error")
                 return
 
         # Detect stack
@@ -1015,24 +1342,122 @@ class CustodianAdmin(App):
 
         self.call_from_thread(self.notify, f"Imported {slug}")
 
+    @work(thread=True)
+    def _do_import_all_gh_repos(self):
+        """Fetch all GitHub repos and import every one."""
+        log = self.query_one("#project-log", RichLog)
+        log.write("[bold blue]Fetching all GitHub repos...[/bold blue]")
+        self.call_from_thread(self.notify, "Fetching all repos from GitHub...")
+
+        # Fetch repo list
+        try:
+            result = subprocess.run(
+                ["gh", "repo", "list", "--limit", "50", "--json", "nameWithOwner,description"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                log.write(f"[red]gh failed: {result.stderr.strip()}[/red]")
+                self.call_from_thread(self.notify, f"gh failed: {result.stderr.strip()[:60]}", severity="error")
+                return
+
+            repos = json.loads(result.stdout)
+            self._gh_repos = repos
+            self.call_from_thread(self._refresh_gh_repos_table, repos)
+        except FileNotFoundError:
+            log.write("[red]gh CLI not found[/red]")
+            self.call_from_thread(self.notify, "gh CLI not found", severity="error")
+            return
+        except Exception as e:
+            log.write(f"[red]Error fetching repos: {e}[/red]")
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+            return
+
+        total = len(repos)
+        log.write(f"[green]Found {total} repos — importing all...[/green]")
+        self.call_from_thread(self.notify, f"Importing {total} repos...")
+
+        imported = 0
+        skipped = 0
+        failed = 0
+
+        for i, repo in enumerate(repos, 1):
+            repo_full = repo["nameWithOwner"]
+            repo_name = repo_full.split("/")[-1]
+            slug = slugify(repo_name)
+            repo_url = f"https://github.com/{repo_full}.git"
+            target = os.path.join(PROJECTS_DIR, repo_name)
+
+            log.write(f"\n[bold]({i}/{total}) {repo_full}[/bold]")
+
+            if os.path.isdir(target):
+                log.write(f"  [yellow]Already exists — pulling latest[/yellow]")
+                try:
+                    subprocess.run(
+                        ["git", "-C", target, "pull"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                except Exception:
+                    pass
+                skipped += 1
+            else:
+                log.write(f"  [blue]Cloning...[/blue]")
+                try:
+                    os.makedirs(PROJECTS_DIR, exist_ok=True)
+                    result = subprocess.run(
+                        ["git", "clone", "--progress", repo_url, target],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    if result.returncode != 0:
+                        log.write(f"  [red]Clone failed[/red]")
+                        failed += 1
+                        continue
+                    log.write(f"  [green]Cloned[/green]")
+                except subprocess.TimeoutExpired:
+                    log.write(f"  [red]Timed out[/red]")
+                    failed += 1
+                    continue
+                except Exception as e:
+                    log.write(f"  [red]{e}[/red]")
+                    failed += 1
+                    continue
+
+            # Detect stack & register
+            stack = detect_stack(target)
+            register_project(slug, target, stack)
+            log.write(f"  Registered: {slug} ({stack or 'unknown stack'})")
+            imported += 1
+
+            # Update notification every 5 repos
+            if i % 5 == 0:
+                self.call_from_thread(self.notify, f"Progress: {i}/{total}...")
+
+        # Final refresh
+        self.call_from_thread(self._load_projects)
+        self.call_from_thread(self._refresh_projects_tab)
+        self.call_from_thread(self._refresh_custodian_tab)
+
+        summary = f"Done! Imported: {imported}, Skipped: {skipped}, Failed: {failed}"
+        log.write(f"\n[bold green]{summary}[/bold green]")
+        self.call_from_thread(self.notify, summary)
+
     def _do_remove_project(self):
         """Deactivate the selected project."""
         log = self.query_one("#project-log", RichLog)
-        table = self.query_one("#projects-table", DataTable)
 
-        if table.cursor_row is None:
-            log.write("[red]Select a project row first[/red]")
+        if self._selected_card_project_id is None:
+            log.write("[red]Click a project card first[/red]")
+            self.notify("Click a project card first", severity="warning")
             return
 
-        try:
-            row_data = table.get_row_at(table.cursor_row)
-            project_id = int(row_data[0])
-            project_name = row_data[1]
-        except (IndexError, ValueError):
-            log.write("[red]Could not read selection[/red]")
-            return
-
+        project_id = self._selected_card_project_id
         conn = get_db()
+        proj = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not proj:
+            log.write("[red]Project not found[/red]")
+            conn.close()
+            return
+
+        project_name = proj["name"]
         conn.execute("UPDATE projects SET status = 'inactive' WHERE id = ?", (project_id,))
         conn.commit()
         conn.close()
@@ -1045,21 +1470,21 @@ class CustodianAdmin(App):
     def _do_reactivate_project(self):
         """Reactivate a deactivated project."""
         log = self.query_one("#project-log", RichLog)
-        table = self.query_one("#projects-table", DataTable)
 
-        if table.cursor_row is None:
-            log.write("[red]Select a project row first[/red]")
+        if self._selected_card_project_id is None:
+            log.write("[red]Click a project card first[/red]")
+            self.notify("Click a project card first", severity="warning")
             return
 
-        try:
-            row_data = table.get_row_at(table.cursor_row)
-            project_id = int(row_data[0])
-            project_name = row_data[1]
-        except (IndexError, ValueError):
-            log.write("[red]Could not read selection[/red]")
-            return
-
+        project_id = self._selected_card_project_id
         conn = get_db()
+        proj = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not proj:
+            log.write("[red]Project not found[/red]")
+            conn.close()
+            return
+
+        project_name = proj["name"]
         conn.execute("UPDATE projects SET status = 'active' WHERE id = ?", (project_id,))
         conn.commit()
         conn.close()
@@ -1072,15 +1497,14 @@ class CustodianAdmin(App):
     # ── Custodian Workers ─────────────────────────────────────────────
 
     @work(thread=True)
-    def _do_index_project(self):
+    def _do_index_project(self, selected_value):
         """Run custodian indexing for selected project."""
-        select = self.query_one("#custodian-project-select", Select)
-        if select.value == Select.BLANK:
+        if selected_value == Select.BLANK:
             log = self.query_one("#custodian-log", RichLog)
             log.write("[red]Select a project first[/red]")
             return
 
-        project_id = select.value
+        project_id = selected_value
         conn = get_db()
         project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         conn.close()
@@ -1158,17 +1582,16 @@ class CustodianAdmin(App):
     # ── Detective Workers ─────────────────────────────────────────────
 
     @work(thread=True)
-    def _do_detective(self, model):
+    def _do_detective(self, model, selected_value):
         """Run detective analysis."""
         log = self.query_one("#insight-detail", RichLog)
         log.clear()
         log.write(f"[bold]Running detective ({model})...[/bold]")
 
-        select = self.query_one("#detective-project-select", Select)
         project_name = None
-        if select.value != Select.BLANK:
+        if selected_value != Select.BLANK:
             conn = get_db()
-            project = conn.execute("SELECT name FROM projects WHERE id = ?", (select.value,)).fetchone()
+            project = conn.execute("SELECT name FROM projects WHERE id = ?", (selected_value,)).fetchone()
             conn.close()
             if project:
                 project_name = project["name"]
@@ -1246,33 +1669,86 @@ class CustodianAdmin(App):
             label.update("No session")
         self._refresh_git_status()
 
+    def _open_editor_project(self, project_id):
+        """Switch the Editor tab to a specific project."""
+        conn = get_db()
+        proj = conn.execute(
+            "SELECT name, path FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        conn.close()
+
+        if not proj:
+            self.notify("Project not found", severity="error")
+            return
+
+        native_path = _to_native_path(proj["path"])
+        if not os.path.isdir(native_path):
+            self.notify(f"Project path not found: {native_path}", severity="error")
+            return
+
+        self._editor_project_name = proj["name"]
+        self._editor_project_path = native_path
+
+        # Reload file tree with project root
+        tree = self.query_one("#editor-tree", WorkbenchDirectoryTree)
+        tree.path = native_path
+
+        # Clear editor
+        textarea = self.query_one("#editor-textarea", TextArea)
+        textarea.load_text("")
+        label = self.query_one("#editor-file-label", Static)
+        label.update(f"[bold]{proj['name']}[/bold] — select a file")
+        self._editor_current_file = None
+        self._editor_modified = False
+
+        # Refresh git for this project
+        self._refresh_git_status()
+
+        # Auto-create session if needed
+        if not self._claude_session_id:
+            self._do_new_claude_session()
+
+        # Show project in chat
+        chat_log = self.query_one("#claude-chat-log", RichLog)
+        chat_log.write(f"\n[bold green]Switched to project: {proj['name']}[/bold green]")
+        chat_log.write(f"[dim]Path: {native_path}[/dim]")
+
+        self.notify(f"Opened {proj['name']}")
+
     # ── Git Integration ──────────────────────────────────────────────
 
     def _refresh_git_status(self):
         """Update the git status label in the Editor tab."""
+        git_cwd = self._editor_project_path or self._workbench_path
         label = self.query_one("#git-status-label", Static)
         try:
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
                 capture_output=True, text=True,
-                cwd=self._workbench_path, timeout=10,
+                cwd=git_cwd, timeout=10,
             )
             lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
             if not lines:
                 branch = subprocess.run(
                     ["git", "branch", "--show-current"],
                     capture_output=True, text=True,
-                    cwd=self._workbench_path, timeout=5,
+                    cwd=git_cwd, timeout=5,
                 ).stdout.strip()
                 label.update(f"git: {branch} — clean")
             else:
-                label.update(f"git: {len(lines)} changed file{'s' if len(lines) != 1 else ''}")
+                branch = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    capture_output=True, text=True,
+                    cwd=git_cwd, timeout=5,
+                ).stdout.strip()
+                label.update(f"git: {branch} — {len(lines)} changed file{'s' if len(lines) != 1 else ''}")
         except Exception as e:
             label.update(f"git: error ({e})")
 
     @work(thread=True)
     def _do_git_commit_push(self):
-        """Stage all changes, commit with timestamp, push to origin main."""
+        """Stage all changes, commit with timestamp, push to current branch."""
+        git_cwd = self._editor_project_path or self._workbench_path
         label = self.query_one("#git-status-label", Static)
         chat = self.query_one("#claude-chat-log", RichLog)
 
@@ -1280,12 +1756,19 @@ class CustodianAdmin(App):
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True, text=True,
-            cwd=self._workbench_path, timeout=10,
+            cwd=git_cwd, timeout=10,
         )
         changed = [l for l in result.stdout.strip().split("\n") if l.strip()]
         if not changed:
             self.call_from_thread(self.notify, "Nothing to commit — working tree clean", severity="warning")
             return
+
+        # Detect current branch
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True,
+            cwd=git_cwd, timeout=5,
+        ).stdout.strip() or "main"
 
         label.update("git: staging...")
         chat.write(f"[bold cyan]Git:[/] Staging {len(changed)} file(s)...")
@@ -1293,7 +1776,7 @@ class CustodianAdmin(App):
         # Stage all
         subprocess.run(
             ["git", "add", "-A"],
-            cwd=self._workbench_path, timeout=30,
+            cwd=git_cwd, timeout=30,
         )
 
         # Commit
@@ -1303,7 +1786,7 @@ class CustodianAdmin(App):
         result = subprocess.run(
             ["git", "commit", "-m", msg],
             capture_output=True, text=True,
-            cwd=self._workbench_path, timeout=30,
+            cwd=git_cwd, timeout=30,
         )
         if result.returncode != 0:
             chat.write(f"[red]Git commit failed:[/] {result.stderr.strip()}")
@@ -1315,30 +1798,38 @@ class CustodianAdmin(App):
         # Push
         label.update("git: pushing...")
         result = subprocess.run(
-            ["git", "push", "origin", "main"],
+            ["git", "push", "origin", branch],
             capture_output=True, text=True,
-            cwd=self._workbench_path, timeout=60,
+            cwd=git_cwd, timeout=60,
         )
         if result.returncode != 0:
             chat.write(f"[red]Git push failed:[/] {result.stderr.strip()}")
         else:
-            chat.write("[bold green]Git:[/] Pushed to origin/main")
+            chat.write(f"[bold green]Git:[/] Pushed to origin/{branch}")
 
         self.call_from_thread(self._refresh_git_status)
 
     @work(thread=True)
     def _do_git_pull(self):
-        """Pull latest from origin main."""
+        """Pull latest from current branch."""
+        git_cwd = self._editor_project_path or self._workbench_path
         label = self.query_one("#git-status-label", Static)
         chat = self.query_one("#claude-chat-log", RichLog)
 
+        # Detect current branch
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True,
+            cwd=git_cwd, timeout=5,
+        ).stdout.strip() or "main"
+
         label.update("git: pulling...")
-        chat.write("[bold cyan]Git:[/] Pulling from origin/main...")
+        chat.write(f"[bold cyan]Git:[/] Pulling from origin/{branch}...")
 
         result = subprocess.run(
-            ["git", "pull", "origin", "main"],
+            ["git", "pull", "origin", branch],
             capture_output=True, text=True,
-            cwd=self._workbench_path, timeout=60,
+            cwd=git_cwd, timeout=60,
         )
         if result.returncode != 0:
             chat.write(f"[red]Git pull failed:[/] {result.stderr.strip()}")
@@ -1388,10 +1879,9 @@ class CustodianAdmin(App):
 
         textarea.load_text(content)
         lang = self._get_language_for_file(filepath)
-        try:
+        if lang:
             textarea.language = lang
-        except Exception:
-            # Some languages not available when tree-sitter overrides Textual builtins
+        else:
             textarea.language = None
 
         self._editor_current_file = filepath
@@ -1547,16 +2037,24 @@ class CustodianAdmin(App):
         query the right fossil), and includes the file content for immediate context.
         """
         parts = []
+        # If a project is explicitly selected, always include project context
+        if self._editor_project_name:
+            parts.append(
+                f"I am working on the '{self._editor_project_name}' project "
+                f"(path: {self._editor_project_path}). "
+                f"Use get_project_fossil('{self._editor_project_name}') for architecture context."
+            )
         if self._editor_current_file:
             try:
                 with open(self._editor_current_file, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()[:2000]
                 content = "".join(lines)
-                rel = os.path.relpath(self._editor_current_file, self._workbench_path)
+                base_path = self._editor_project_path or self._workbench_path
+                rel = os.path.relpath(self._editor_current_file, base_path)
 
-                project = self._detect_project_for_file(self._editor_current_file)
+                project = self._editor_project_name or self._detect_project_for_file(self._editor_current_file)
                 header = f"I am currently viewing the file {rel} in the NAI Workbench editor."
-                if project:
+                if project and not self._editor_project_name:
                     header += (
                         f"\nThis file belongs to the '{project}' project. "
                         f"Use get_project_fossil('{project}') for full architecture context."
@@ -1740,6 +2238,7 @@ class CustodianAdmin(App):
         if os.path.exists(mcp_config):
             cmd.extend(["--mcp-config", mcp_config])
 
+        claude_cwd = self._editor_project_path or self._workbench_path
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -1748,7 +2247,7 @@ class CustodianAdmin(App):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
-                cwd=self._workbench_path,
+                cwd=claude_cwd,
             )
             self._claude_process = proc
 

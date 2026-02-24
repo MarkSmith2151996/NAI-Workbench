@@ -71,3 +71,29 @@ CREATE INDEX IF NOT EXISTS idx_symbols_project ON symbols(project_id, name);
 CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(project_id, type);
 CREATE INDEX IF NOT EXISTS idx_insights_project ON detective_insights(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_query_log_tool ON query_log(tool_name, timestamp DESC);
+
+-- Editor sessions — persistent Claude sessions per project
+CREATE TABLE IF NOT EXISTS editor_sessions (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER REFERENCES projects(id),
+    session_id TEXT NOT NULL,
+    summary TEXT,
+    started_at TEXT DEFAULT (datetime('now')),
+    last_active TEXT DEFAULT (datetime('now')),
+    device TEXT,
+    status TEXT DEFAULT 'active'
+);
+
+-- Sandbox state — tracks background dev server / test processes
+CREATE TABLE IF NOT EXISTS sandbox_state (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER REFERENCES projects(id),
+    command TEXT,
+    pid INTEGER,
+    port INTEGER,
+    status TEXT DEFAULT 'stopped',
+    log_path TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_editor_sessions_project ON editor_sessions(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_sandbox_state_project ON sandbox_state(project_id);
