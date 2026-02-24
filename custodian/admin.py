@@ -2223,8 +2223,11 @@ class CustodianAdmin(App):
         briefs = self._get_fossil_briefs()
         system_ctx = EDITOR_SYSTEM_PROMPT + f"\nRegistered projects:\n{briefs}\n"
 
-        # Build MCP config path (absolute so it works from any cwd)
-        mcp_config = os.path.join(self._workbench_path, ".claude", "mcp.json")
+        # Build MCP config path — use WSL-native paths when running under WSL
+        if _IS_WSL:
+            mcp_config = os.path.join(self._workbench_path, ".claude", "mcp-wsl.json")
+        else:
+            mcp_config = os.path.join(self._workbench_path, ".claude", "mcp.json")
 
         cmd = [
             "claude", "-p",
