@@ -367,6 +367,7 @@ class EditorApp(App):
     BINDINGS = [
         Binding("r", "resume", "Resume Session"),
         Binding("n", "new_session", "New Session"),
+        Binding("u", "update", "Update Editor"),
         Binding("q", "quit", "Quit"),
         Binding("up,k", "move_up", "Up", show=False),
         Binding("down,j", "move_down", "Down", show=False),
@@ -385,6 +386,7 @@ class EditorApp(App):
         with Horizontal(id="action-bar"):
             yield Button("[R] Resume", variant="primary", id="btn-resume")
             yield Button("[N] New Session", variant="success", id="btn-new")
+            yield Button("[U] Update", variant="warning", id="btn-update")
             yield Button("[Q] Quit", variant="error", id="btn-quit")
         yield Static("Select a project to begin", id="status-line")
         yield Footer()
@@ -455,12 +457,57 @@ class EditorApp(App):
             return
         self._launch(resume=False)
 
+    def action_update(self):
+        """Pull latest changes from GitHub and restart."""
+        workbench_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.query_one("#status-line", Static).update("Updating from GitHub...")
+        self.notify("Pulling latest from GitHub...", severity="information")
+
+        def _do_update():
+            try:
+                result = subprocess.run(
+                    ["git", "pull", "--ff-only"],
+                    cwd=workbench_dir,
+                    capture_output=True, text=True, timeout=30,
+                )
+                output = result.stdout.strip()
+                if result.returncode != 0:
+                    return f"Git pull failed: {result.stderr.strip()}"
+                return output
+            except Exception as e:
+                return f"Update error: {e}"
+
+        import threading
+
+        def _on_done(output):
+            if "Already up to date" in output:
+                self.notify("Already up to date", severity="information")
+                self.query_one("#status-line", Static).update("Already up to date")
+            elif "error" in output.lower() or "failed" in output.lower():
+                self.notify(output[:80], severity="error")
+                self.query_one("#status-line", Static).update(output[:60])
+            else:
+                self.notify(f"Updated! {output[:60]}", severity="information")
+                self.query_one("#status-line", Static).update(
+                    "Updated! Restart editor (Q then reopen) for changes to take effect"
+                )
+                # Reload project list in case DB schema changed
+                self._load_projects()
+
+        def _run():
+            output = _do_update()
+            self.call_from_thread(_on_done, output)
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def on_button_pressed(self, event: Button.Pressed):
         button_id = event.button.id
         if button_id == "btn-resume":
             self.action_resume()
         elif button_id == "btn-new":
             self.action_new_session()
+        elif button_id == "btn-update":
+            self.action_update()
         elif button_id == "btn-quit":
             self.exit()
 

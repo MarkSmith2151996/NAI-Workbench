@@ -111,6 +111,7 @@ You should see 4 sidebar widgets:
 | Resume existing session | `R` or Enter (if session exists) | Launches Claude with previous session |
 | Start new session | `N` or Enter (if no session) | Launches Claude with fresh session |
 | **Exit Claude → back to picker** | **Double-Esc** | Exits Claude CLI, returns to project selector |
+| **Update editor from GitHub** | `U` | Pulls latest changes from the NAI-Workbench repo |
 | Quit editor entirely | `Q` | Closes the editor widget |
 
 ### Custodian MCP Setup (one-time)
