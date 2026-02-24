@@ -553,6 +553,14 @@ class CustodianAdmin(App):
                         yield Button("Reactivate", variant="default", id="btn-reactivate-project")
                         yield Button("Open in Editor", variant="primary", id="btn-card-to-editor")
 
+                    yield Static("Quick Import", classes="section-header")
+                    with Horizontal(classes="action-bar"):
+                        yield Input(
+                            placeholder="Paste GitHub URL or owner/repo...",
+                            id="quick-import-input",
+                        )
+                        yield Button("Import", variant="success", id="btn-quick-import")
+
                     yield Static("Import from GitHub", classes="section-header")
                     yield Static(
                         f"Projects clone to: {PROJECTS_DIR}/",
@@ -624,6 +632,9 @@ class CustodianAdmin(App):
             # ── Status Tab ────────────────────────────────────
             with TabPane("Status", id="tab-status"):
                 with Vertical(classes="tab-content"):
+                    with Horizontal(classes="action-bar"):
+                        yield Button("Update Workbench", variant="warning", id="btn-update-workbench")
+                        yield Static("", id="update-status-label")
                     yield Static("System Status", classes="section-header")
                     yield DataTable(id="status-projects-table")
                     yield Static("Database", classes="section-header")
@@ -1078,6 +1089,10 @@ class CustodianAdmin(App):
             self._selected_card_project_id = project_id
             self._highlight_selected_card(project_id)
             self._populate_hierarchy_tree(project_id)
+        elif button_id == "btn-quick-import":
+            self._do_quick_import()
+        elif button_id == "btn-update-workbench":
+            self._do_update_workbench()
         elif button_id == "btn-fetch-gh":
             self._do_fetch_gh_repos()
         elif button_id == "btn-clone-gh":
@@ -1223,6 +1238,118 @@ class CustodianAdmin(App):
             detail.write(f"Projects: {insight['projects_involved']}")
         detail.write("")
         detail.write(insight["content"])
+
+    # ── Update Worker ─────────────────────────────────────────────────
+
+    @work(thread=True)
+    def _do_update_workbench(self):
+        """Pull latest NAI-Workbench changes from GitHub."""
+        label = self.query_one("#update-status-label", Static)
+        self.call_from_thread(label.update, "[bold blue]Pulling...[/bold blue]")
+        self.call_from_thread(self.notify, "Updating from GitHub...")
+
+        try:
+            result = subprocess.run(
+                ["git", "pull", "--ff-only"],
+                cwd=self._workbench_path,
+                capture_output=True, text=True, timeout=30,
+            )
+            output = result.stdout.strip()
+            if result.returncode != 0:
+                msg = result.stderr.strip()[:80]
+                self.call_from_thread(label.update, f"[red]{msg}[/red]")
+                self.call_from_thread(self.notify, f"Update failed: {msg}", severity="error")
+            elif "Already up to date" in output:
+                self.call_from_thread(label.update, "[green]Already up to date[/green]")
+                self.call_from_thread(self.notify, "Already up to date")
+            else:
+                self.call_from_thread(label.update, "[green]Updated! Restart for changes.[/green]")
+                self.call_from_thread(self.notify, f"Updated! {output[:60]}")
+        except Exception as e:
+            self.call_from_thread(label.update, f"[red]Error: {e}[/red]")
+            self.call_from_thread(self.notify, f"Update error: {e}", severity="error")
+
+    # ── Quick Import Worker ───────────────────────────────────────────
+
+    @work(thread=True)
+    def _do_quick_import(self):
+        """One-click import: paste URL or owner/repo, clone + register."""
+        inp = self.query_one("#quick-import-input", Input)
+        raw = inp.value.strip()
+        log = self.query_one("#project-log", RichLog)
+
+        if not raw:
+            self.call_from_thread(self.notify, "Paste a GitHub URL or owner/repo first", severity="warning")
+            return
+
+        # Parse: accept full URLs, owner/repo, or just repo name
+        # https://github.com/owner/repo.git → owner/repo
+        # https://github.com/owner/repo → owner/repo
+        # owner/repo → owner/repo
+        import re as _re
+        m = _re.match(r"(?:https?://github\.com/)?([^/\s]+/[^/\s]+?)(?:\.git)?/?$", raw)
+        if m:
+            repo_full = m.group(1)
+        else:
+            self.call_from_thread(self.notify, "Invalid format. Use: owner/repo or full GitHub URL", severity="error")
+            log.write(f"[red]Invalid input: {raw}[/red]")
+            return
+
+        repo_name = repo_full.split("/")[-1]
+        slug = slugify(repo_name)
+        repo_url = f"https://github.com/{repo_full}.git"
+        target = os.path.join(PROJECTS_DIR, repo_name)
+
+        log.write(f"[bold]Quick import: {repo_full} → {target}[/bold]")
+        self.call_from_thread(self.notify, f"Importing {repo_name}...")
+
+        if os.path.isdir(target):
+            log.write(f"[yellow]{repo_name} already exists — pulling latest...[/yellow]")
+            try:
+                result = subprocess.run(
+                    ["git", "-C", target, "pull"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                log.write(result.stdout.strip() or result.stderr.strip() or "Up to date")
+            except Exception as e:
+                log.write(f"[red]Pull failed: {e}[/red]")
+        else:
+            log.write(f"[bold blue]Cloning {repo_url}...[/bold blue]")
+            try:
+                os.makedirs(PROJECTS_DIR, exist_ok=True)
+                result = subprocess.run(
+                    ["git", "clone", "--progress", repo_url, target],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.stderr.strip():
+                    for line in result.stderr.strip().split("\n"):
+                        log.write(line)
+                if result.returncode != 0:
+                    log.write("[bold red]Clone failed![/bold red]")
+                    self.call_from_thread(self.notify, "Clone failed!", severity="error")
+                    return
+                log.write(f"[green]Cloned to {target}[/green]")
+            except subprocess.TimeoutExpired:
+                log.write("[red]Clone timed out (120s)[/red]")
+                self.call_from_thread(self.notify, "Clone timed out", severity="error")
+                return
+            except Exception as e:
+                log.write(f"[red]Clone error: {e}[/red]")
+                self.call_from_thread(self.notify, f"Clone error: {e}", severity="error")
+                return
+
+        # Detect stack and register
+        stack = detect_stack(target)
+        log.write(f"Detected stack: {stack or '(unknown)'}")
+        register_project(slug, target, stack)
+        log.write(f"[bold green]Registered '{slug}' in custodian DB[/bold green]")
+
+        # Clear input and refresh
+        self.call_from_thread(setattr, inp, "value", "")
+        self.call_from_thread(self._load_projects)
+        self.call_from_thread(self._refresh_projects_tab)
+        self.call_from_thread(self._refresh_custodian_tab)
+        self.call_from_thread(self.notify, f"Imported {slug}")
 
     # ── Projects Workers ──────────────────────────────────────────────
 

@@ -6,30 +6,26 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Activate venv — detect platform first
-WSL_VENV="$HOME/.custodian-venv"
-LOCAL_VENV="$WORKBENCH_DIR/custodian/.venv"
+# Use venv python directly — no 'source activate' needed
+# This works in Wave's cmd controller which doesn't support 'source'
+VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
+LOCAL_PYTHON="$WORKBENCH_DIR/custodian/.venv/bin/python3"
+LOCAL_PYTHON_WIN="$WORKBENCH_DIR/custodian/.venv/Scripts/python.exe"
 
-if uname -s 2>/dev/null | grep -qi linux; then
-    # WSL or native Linux
-    if [ -d "$WSL_VENV/bin" ]; then
-        source "$WSL_VENV/bin/activate"
-    elif [ -d "$LOCAL_VENV/bin" ]; then
-        source "$LOCAL_VENV/bin/activate"
-    fi
+if [ -x "$VENV_PYTHON" ]; then
+    PYTHON="$VENV_PYTHON"
+elif [ -x "$LOCAL_PYTHON" ]; then
+    PYTHON="$LOCAL_PYTHON"
+elif [ -x "$LOCAL_PYTHON_WIN" ]; then
+    PYTHON="$LOCAL_PYTHON_WIN"
 else
-    # Windows (Git Bash / MSYS)
-    if [ -d "$LOCAL_VENV/Scripts" ]; then
-        source "$LOCAL_VENV/Scripts/activate"
-    elif [ -d "$LOCAL_VENV/bin" ]; then
-        source "$LOCAL_VENV/bin/activate"
-    fi
+    PYTHON="python3"
 fi
 
 # Ensure DB exists
 if [ ! -f "$WORKBENCH_DIR/custodian/custodian.db" ]; then
-    python "$WORKBENCH_DIR/custodian/init_db.py"
+    "$PYTHON" "$WORKBENCH_DIR/custodian/init_db.py"
 fi
 
 cd "$WORKBENCH_DIR"
-python custodian/editor.py
+exec "$PYTHON" custodian/editor.py
