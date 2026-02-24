@@ -29,9 +29,9 @@
     "color": "#6c63ff",
     "blockdef": {
       "meta": {
-        "view": "web",
-        "url": "http://TAILSCALE_IP:9001",
-        "pinnedurl": "http://TAILSCALE_IP:9001"
+        "view": "term",
+        "controller": "cmd",
+        "cmd": "xdg-open http://TAILSCALE_IP:9001"
       }
     }
   },
