@@ -62,6 +62,7 @@ Docker containers / systemd services
 | `9001` | `WSL_IP:9001` | Penpot | Docker maps `9001:8080` (nginx listens on 8080 inside container) |
 | `9090` | `WSL_IP:9090` | Komodo | Docker maps `9090:9120` |
 | `9091` | `WSL_IP:9091` | code-server | VS Code in browser |
+| `7777` | `WSL_IP:7777` | Sandbox widget | Alpha Builds preview iframe |
 
 ## Networking
 
@@ -101,6 +102,25 @@ Docker containers / systemd services
 - `claude-session` — Project picker that launches Claude CLI in the selected project dir
 - `import-project` — Clone a GitHub repo into ~/projects/ with optional hooks + CLAUDE.md
 
+## Admin TUI Tabs (custodian/admin.py)
+The Admin TUI has 8 tabs:
+1. **Projects** — Import from GitHub, register local projects, view hierarchy maps
+2. **Custodian** — Index projects (trigger Sonnet fossil generation)
+3. **Fossils** — Browse fossil history, view architecture/symbols/issues
+4. **Detective** — Run Sonnet/Opus analysis, view insights, refine prompts
+5. **Status** — DB stats, project status, recent MCP queries
+6. **Editor** — File browser + code editor + persistent Claude Code chat
+7. **Agent Factory** — Create, configure, and run AI agents via Claude Agent SDK. Manage pipelines, approve reindex requests.
+8. **Alpha Builds** — Docker container-based project sandboxes. Launch, stop, rebuild, shell into containers.
+
+### MCP Tools
+The Custodian MCP server (`custodian/mcp_server.py`) exposes these tools:
+- `list_projects`, `get_project_fossil`, `lookup_symbol`, `get_symbol_context`
+- `find_related_files`, `get_recent_changes`, `get_detective_insights`, `trigger_custodian`
+- `request_reindex` — Create a pending reindex request (user must approve in Admin TUI)
+- `sandbox_start/stop/restart/status/logs/test/install` — Sandbox management
+- `penpot_list_projects/get_page/export_svg` — Penpot design integration
+
 ## How It Works
 Wave Terminal is the primary interface. The TUI dashboard (`dashboard/dashboard.py`) runs in a Wave terminal pane showing service health, Docker containers, tmux sessions, projects, and system metrics with real-time auto-refresh. Claude CLI runs in a separate Wave pane with full MCP tool access. Penpot and Komodo load as Wave web widget panes. Wave config files in `config/wave/` define sidebar widget buttons for quick access.
 
@@ -127,6 +147,40 @@ Wave Terminal is the primary interface. The TUI dashboard (`dashboard/dashboard.
 - Env config: `config/penpot/compose.env` (copy from `compose.env.template`, fill in secrets)
 - Account: `admin@local.dev` / `admin123`
 - Registration disabled after initial setup
+
+## Laptop Bridge MCP Server
+
+Remote MCP server that runs on the Arch laptop so the PC's Claude Code can operate on laptop files over Tailscale.
+
+### First-time setup (run on the laptop)
+
+```bash
+cd ~/NAI-Workbench/laptop-bridge
+bash install.sh
+```
+
+This installs deps (`mcp`, `uvicorn`, `starlette`), generates a token, creates a systemd user service, and starts it. Copy the printed token into the PC's `.claude/mcp.json` under `laptop-bridge.headers.Authorization`.
+
+### Updating after code changes
+
+```bash
+cp ~/NAI-Workbench/laptop-bridge/server.py ~/laptop-bridge/server.py
+systemctl --user restart laptop-bridge
+```
+
+### Service commands
+
+```bash
+systemctl --user status laptop-bridge
+journalctl --user -u laptop-bridge -f
+systemctl --user restart laptop-bridge
+```
+
+### Key details
+- Binds to Tailscale IP only (`100.79.63.10:8222`)
+- Bearer token auth on every request
+- 8 tools: `laptop_read_file`, `laptop_write_file`, `laptop_edit_file`, `laptop_run_command`, `laptop_glob`, `laptop_grep`, `laptop_list_dir`, `laptop_system_info`
+- Files: `laptop-bridge/server.py`, `laptop-bridge/install.sh`
 
 ## Known Gotchas
 - `/run/sshd` disappears on WSL restart — must `mkdir -p /run/sshd` before starting sshd
