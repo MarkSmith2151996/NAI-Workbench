@@ -62,7 +62,7 @@ Docker containers / systemd services
 | `9001` | `WSL_IP:9001` | Penpot | Docker maps `9001:8080` (nginx listens on 8080 inside container) |
 | `9090` | `WSL_IP:9090` | Komodo | Docker maps `9090:9120` |
 | `9091` | `WSL_IP:9091` | code-server | VS Code in browser |
-| `7777` | `WSL_IP:7777` | Sandbox widget | Alpha Builds preview iframe |
+| `7777` | `WSL_IP:7777` | Sandbox widget + /api/health | Alpha Builds preview iframe + health endpoint |
 
 ## Networking
 
@@ -101,6 +101,14 @@ Docker containers / systemd services
 - `test-project` — Interactive test pipeline: pick a project → auto-detect stack → lint/type-check/test/coverage/security → AI debug on failure
 - `claude-session` — Project picker that launches Claude CLI in the selected project dir
 - `import-project` — Clone a GitHub repo into ~/projects/ with optional hooks + CLAUDE.md
+- `install-watchdog` — Install watchdog systemd service (sshd/Docker auto-recovery)
+- `workbench-check` — Laptop connectivity checker (Tailscale, ports, SSH, health)
+
+## Watchdog (`custodian/watchdog.py`)
+Systemd daemon that auto-recovers sshd and Docker, cleans stale sandbox DB entries.
+- Install: `bash bin/install-watchdog`
+- Health: `cat /tmp/watchdog-health.json`
+- Logs: `journalctl --user -u workbench-watchdog -f`
 
 ## Admin TUI Tabs (custodian/admin.py)
 The Admin TUI has 8 tabs:
@@ -183,7 +191,7 @@ systemctl --user restart laptop-bridge
 - Files: `laptop-bridge/server.py`, `laptop-bridge/install.sh`
 
 ## Known Gotchas
-- `/run/sshd` disappears on WSL restart — must `mkdir -p /run/sshd` before starting sshd
+- `/run/sshd` disappears on WSL restart — watchdog auto-recovers this (install with `bash bin/install-watchdog`)
 - WSL NAT IP can change on reboot — port proxy rules for 9001/9090/9091 need updating (2222 is fine, uses localhost)
 - Penpot internal port is **8080** not 80 — Docker mapping must be `9001:8080`
 - Claude Code needs browser auth once from the PC directly (not via SSH)

@@ -1,0 +1,157 @@
+#!/bin/bash
+# NAI Workbench — Laptop connectivity checker
+# Run from the Arch laptop to diagnose the full chain to WSL.
+#
+# Usage:
+#   bash workbench-check          # full check
+#   bash workbench-check --quick  # just Tailscale + SSH
+set -uo pipefail
+
+PC_IP="100.95.20.98"
+SSH_PORT=2222
+HEALTH_PORT=7777
+
+# ANSI colors
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+DIM='\033[0;90m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
+fail() { echo -e "  ${RED}✗${NC} $1"; }
+warn() { echo -e "  ${YELLOW}!${NC} $1"; }
+info() { echo -e "  ${DIM}$1${NC}"; }
+
+ERRORS=0
+QUICK=false
+[[ "${1:-}" == "--quick" ]] && QUICK=true
+
+echo -e "${BOLD}NAI Workbench — Connectivity Check${NC}"
+echo -e "${DIM}PC: ${PC_IP}  |  $(date '+%H:%M:%S')${NC}"
+echo ""
+
+# --- 1. Tailscale ---
+echo -e "${CYAN}[1/5] Tailscale${NC}"
+if ping -c 1 -W 2 "$PC_IP" &>/dev/null; then
+    ok "Tailscale tunnel UP (${PC_IP})"
+else
+    fail "Tailscale tunnel DOWN — cannot reach ${PC_IP}"
+    echo ""
+    echo -e "  ${YELLOW}Recovery:${NC}"
+    info "  Check: tailscale status"
+    info "  On PC:  Start-Service Tailscale (PowerShell admin)"
+    ERRORS=$((ERRORS + 1))
+    # If Tailscale is down, nothing else will work
+    echo ""
+    echo -e "${RED}Cannot continue without Tailscale. Fix and retry.${NC}"
+    exit 1
+fi
+
+# --- 2. Port checks ---
+echo ""
+echo -e "${CYAN}[2/5] Port checks${NC}"
+
+check_port() {
+    local port=$1
+    local name=$2
+    if timeout 2 bash -c "echo >/dev/tcp/${PC_IP}/${port}" 2>/dev/null; then
+        ok "${name} (${port})"
+    else
+        fail "${name} (${port}) — not reachable"
+        ERRORS=$((ERRORS + 1))
+    fi
+}
+
+check_port "$SSH_PORT" "SSH"
+if ! $QUICK; then
+    check_port "$HEALTH_PORT" "Sandbox/Health"
+    check_port 9001 "Penpot"
+    check_port 9090 "Komodo"
+    check_port 9091 "code-server"
+fi
+
+# --- 3. Watchdog health ---
+echo ""
+echo -e "${CYAN}[3/5] Watchdog health${NC}"
+
+HEALTH_JSON=""
+if ! $QUICK; then
+    HEALTH_JSON=$(curl -s --connect-timeout 3 "http://${PC_IP}:${HEALTH_PORT}/api/health" 2>/dev/null)
+    if [ -n "$HEALTH_JSON" ]; then
+        STATUS=$(echo "$HEALTH_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
+        if [ "$STATUS" = "healthy" ]; then
+            ok "Watchdog: ${STATUS}"
+        elif [ "$STATUS" = "degraded" ]; then
+            warn "Watchdog: ${STATUS}"
+        else
+            fail "Watchdog: ${STATUS}"
+            ERRORS=$((ERRORS + 1))
+        fi
+
+        # Show individual services
+        echo "$HEALTH_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for svc, st in d.get('services', {}).items():
+    sym = '✓' if st in ('ok','recovered') else '!'
+    print(f'    {sym} {svc}: {st}')
+if d.get('wsl_ip'):
+    print(f'    WSL IP: {d[\"wsl_ip\"]}')
+" 2>/dev/null
+    else
+        warn "Health endpoint not reachable (watchdog may not be running)"
+        info "Install: bash bin/install-watchdog"
+    fi
+else
+    info "Skipped (--quick mode)"
+fi
+
+# --- 4. SSH test ---
+echo ""
+echo -e "${CYAN}[4/5] SSH connection${NC}"
+
+SSH_RESULT=$(ssh -o ConnectTimeout=3 -o BatchMode=yes -p "$SSH_PORT" "dev@${PC_IP}" "echo ok" 2>&1)
+if [ "$SSH_RESULT" = "ok" ]; then
+    ok "SSH login successful"
+else
+    fail "SSH login failed"
+    ERRORS=$((ERRORS + 1))
+
+    echo ""
+    echo -e "  ${YELLOW}Recovery hints:${NC}"
+    info "  The watchdog should auto-restart sshd within 10s."
+    info "  If it doesn't recover, run on the PC (PowerShell/WSL):"
+    info ""
+    info "    wsl -u root mkdir -p /run/sshd"
+    info "    wsl -u root /usr/sbin/sshd"
+    info ""
+    info "  Or via PowerShell:"
+    info "    wsl -d Ubuntu-24.04 -u root bash -c 'mkdir -p /run/sshd && /usr/sbin/sshd'"
+fi
+
+# --- 5. Summary ---
+echo ""
+echo -e "${CYAN}[5/5] Summary${NC}"
+
+if [ "$ERRORS" -eq 0 ]; then
+    echo ""
+    echo -e "  ${GREEN}${BOLD}All checks passed.${NC}"
+else
+    echo ""
+    echo -e "  ${RED}${BOLD}${ERRORS} issue(s) detected.${NC}"
+
+    # If SSH is down but health endpoint is up, note the self-healing
+    if [ -n "$HEALTH_JSON" ]; then
+        SSHD_STATUS=$(echo "$HEALTH_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('services',{}).get('sshd','?'))" 2>/dev/null || echo "?")
+        if [ "$SSHD_STATUS" != "ok" ] && [ "$SSHD_STATUS" != "recovered" ]; then
+            echo ""
+            warn "Watchdog sees sshd as '${SSHD_STATUS}' — recovery in progress, wait 10s and retry"
+        fi
+    fi
+fi
+
+echo ""
+exit "$ERRORS"

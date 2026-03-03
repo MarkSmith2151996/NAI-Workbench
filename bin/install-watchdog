@@ -1,0 +1,114 @@
+#!/bin/bash
+# NAI Workbench — Watchdog service installer
+# Run on WSL as the dev user.
+#
+# Usage:
+#   bash bin/install-watchdog
+set -euo pipefail
+
+SERVICE_NAME="workbench-watchdog"
+VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
+WATCHDOG_SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/custodian/watchdog.py"
+SUDOERS_FILE="/etc/sudoers.d/workbench-watchdog"
+
+echo "=== NAI Workbench Watchdog Installer ==="
+echo ""
+
+# --- 1. Verify prerequisites ---
+echo "[1/4] Checking prerequisites..."
+
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo "  ERROR: venv python not found at $VENV_PYTHON"
+    echo "  Run: python3 -m venv ~/.custodian-venv"
+    exit 1
+fi
+
+if [ ! -f "$WATCHDOG_SCRIPT" ]; then
+    echo "  ERROR: watchdog.py not found at $WATCHDOG_SCRIPT"
+    exit 1
+fi
+
+echo "  -> Python: $VENV_PYTHON"
+echo "  -> Script: $WATCHDOG_SCRIPT"
+
+# --- 2. Set up sudoers (passwordless sshd/docker recovery) ---
+echo ""
+echo "[2/4] Setting up sudoers for passwordless recovery..."
+
+SUDOERS_CONTENT="# NAI Workbench watchdog — auto-recovery permissions
+$USER ALL=(ALL) NOPASSWD: /usr/sbin/sshd
+$USER ALL=(ALL) NOPASSWD: /bin/mkdir -p /run/sshd
+$USER ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /run/sshd
+$USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl start docker
+"
+
+# Write via a temp file + visudo check
+TMPFILE=$(mktemp)
+echo "$SUDOERS_CONTENT" > "$TMPFILE"
+
+if sudo visudo -cf "$TMPFILE" 2>/dev/null; then
+    sudo cp "$TMPFILE" "$SUDOERS_FILE"
+    sudo chmod 440 "$SUDOERS_FILE"
+    echo "  -> $SUDOERS_FILE created"
+else
+    echo "  WARNING: sudoers syntax check failed, skipping"
+    echo "  You may need to manually add sudoers entries"
+fi
+rm -f "$TMPFILE"
+
+# --- 3. Create systemd user service ---
+echo ""
+echo "[3/4] Creating systemd user service..."
+mkdir -p "$HOME/.config/systemd/user"
+
+cat > "$HOME/.config/systemd/user/${SERVICE_NAME}.service" << UNIT
+[Unit]
+Description=NAI Workbench Watchdog — service monitor and auto-recovery
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$VENV_PYTHON $WATCHDOG_SCRIPT
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+UNIT
+
+echo "  -> ~/.config/systemd/user/${SERVICE_NAME}.service"
+
+# --- 4. Enable and start ---
+echo ""
+echo "[4/4] Enabling and starting service..."
+systemctl --user daemon-reload
+systemctl --user enable "$SERVICE_NAME"
+systemctl --user restart "$SERVICE_NAME"
+sleep 2
+
+if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+    echo ""
+    echo "=== SUCCESS ==="
+    echo "Watchdog is running."
+    echo ""
+    echo "Commands:"
+    echo "  status:   systemctl --user status $SERVICE_NAME"
+    echo "  logs:     journalctl --user -u $SERVICE_NAME -f"
+    echo "  restart:  systemctl --user restart $SERVICE_NAME"
+    echo "  health:   cat /tmp/watchdog-health.json | python3 -m json.tool"
+    echo ""
+    echo "Test recovery:"
+    echo "  sudo kill \$(pgrep -x sshd)  # watchdog should restart within 10s"
+    echo "  cat /tmp/watchdog-health.json"
+else
+    echo ""
+    echo "=== FAILED ==="
+    echo "Service did not start. Check logs:"
+    echo "  journalctl --user -u $SERVICE_NAME -n 20"
+    exit 1
+fi
+
+# Enable lingering so service runs without login session
+loginctl enable-linger "$(whoami)" 2>/dev/null || true

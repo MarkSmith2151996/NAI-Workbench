@@ -36,6 +36,30 @@ The Editor tab has two git buttons in the toolbar:
 
 The git status label updates automatically after: file saves, Claude edits, commits, and pulls.
 
+## How to Update Wave Widgets on Laptop
+
+When new widgets are added on the PC (e.g. Notes, Sandbox), update the laptop's Wave config:
+
+```bash
+# On the laptop — open a LOCAL terminal (not the SSH session)
+PC_IP="100.95.20.98"
+
+# Clone or pull the latest repo
+git clone https://github.com/MarkSmith2151996/NAI-Workbench.git /tmp/nai-workbench 2>/dev/null \
+  || git -C /tmp/nai-workbench pull
+
+# Apply laptop template (replaces TAILSCALE_IP with the PC's Tailscale IP)
+mkdir -p ~/.config/waveterm
+sed "s/TAILSCALE_IP/${PC_IP}/g" /tmp/nai-workbench/config/wave/widgets-laptop.json > ~/.config/waveterm/widgets.json
+
+# Clean up
+rm -rf /tmp/nai-workbench
+
+# Restart Wave Terminal to pick up changes
+```
+
+The template lives at `config/wave/widgets-laptop.json` in the repo. When you add a new widget on the PC, add it to this template too (using `TAILSCALE_IP` as the placeholder), commit, and run the above on the laptop.
+
 ## How to Update (After Dependency/Schema Changes Only)
 
 > Since the symlink means PC and laptop share the same files, you usually don't
@@ -512,6 +536,91 @@ Next Sonnet indexing run      →  Better fossil for Claude
 | `r` | Refresh all data tabs |
 | `q` | Quit the admin TUI |
 | `Enter` | Send message (when chat input is focused) |
+
+---
+
+## Watchdog + Connectivity Tools
+
+### Watchdog (runs on PC/WSL)
+
+The watchdog auto-recovers sshd and Docker when they die, and cleans up stale sandbox entries. Install once on the PC:
+
+```bash
+# SSH to the PC (or run from a local WSL terminal)
+ssh dev@100.95.20.98 -p 2222
+
+cd /home/dev/projects/nai-workbench
+bash bin/install-watchdog
+```
+
+This creates a systemd user service that:
+- Monitors sshd every 10s — auto-restarts if `/run/sshd` disappears or sshd dies
+- Checks Docker every 30s — restarts if unresponsive
+- Detects WSL IP changes every 60s (log only)
+- Cleans stale `alpha_builds` rows every 20s
+- Writes health to `/tmp/watchdog-health.json`
+
+**Commands:**
+```bash
+systemctl --user status workbench-watchdog   # check status
+journalctl --user -u workbench-watchdog -f   # watch logs
+cat /tmp/watchdog-health.json | python3 -m json.tool  # health snapshot
+```
+
+**Test recovery:**
+```bash
+sudo kill $(pgrep -x sshd)   # watchdog restarts within 10s
+cat /tmp/watchdog-health.json # should show recoveries: 1
+```
+
+### Connectivity Checker (runs on laptop)
+
+`workbench-check` tests the full chain from laptop to WSL and shows recovery hints.
+
+**Deploy to laptop:**
+```bash
+# On the laptop — copy from the repo (or clone)
+git clone https://github.com/MarkSmith2151996/NAI-Workbench.git /tmp/nai-workbench 2>/dev/null \
+  || git -C /tmp/nai-workbench pull
+
+# Copy to a convenient location
+cp /tmp/nai-workbench/bin/workbench-check ~/bin/workbench-check
+chmod +x ~/bin/workbench-check
+rm -rf /tmp/nai-workbench
+```
+
+**Usage:**
+```bash
+workbench-check          # full check (Tailscale, ports, health, SSH)
+workbench-check --quick  # just Tailscale + SSH
+```
+
+**What it checks:**
+1. Tailscale tunnel to PC (`100.95.20.98`)
+2. Port reachability: SSH (2222), Sandbox (7777), Penpot (9001), Komodo (9090), code-server (9091)
+3. Watchdog health via `/api/health` endpoint (reachable even when SSH is down)
+4. SSH login test
+5. Recovery hints if something is down
+
+### Health API Endpoint
+
+The sandbox router (port 7777) now exposes a machine-readable health endpoint:
+
+```bash
+curl http://100.95.20.98:7777/api/health
+```
+
+Returns:
+```json
+{
+  "status": "healthy",
+  "services": {"watchdog": "ok", "sshd": "ok", "docker": "ok", "sandbox_router": "ok"},
+  "wsl_ip": "172.21.37.202",
+  "watchdog_uptime": 3600
+}
+```
+
+Status values: `healthy`, `degraded` (watchdog not running or stale), `unhealthy` (sshd or Docker down).
 
 ---
 
