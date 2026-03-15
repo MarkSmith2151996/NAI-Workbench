@@ -1,3 +1,13 @@
+-- Sticky Notes
+CREATE TABLE IF NOT EXISTS sticky_notes (
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    color TEXT DEFAULT 'yellow',
+    done INTEGER DEFAULT 0,
+    pinned INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Custodian System Schema
 -- Maintains project fossils (compressed indexes) for Claude Opus sessions
 
@@ -100,3 +110,115 @@ CREATE TABLE IF NOT EXISTS sandbox_state (
 
 CREATE INDEX IF NOT EXISTS idx_editor_sessions_project ON editor_sessions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_sandbox_state_project ON sandbox_state(project_id);
+
+-- Agent Factory — AI agents powered by Claude Agent SDK
+CREATE TABLE IF NOT EXISTS agents (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    system_prompt TEXT NOT NULL,
+    model TEXT DEFAULT 'sonnet',
+    project_id INTEGER REFERENCES projects(id),
+    max_turns INTEGER DEFAULT 20,
+    tools TEXT,                          -- JSON: allowed tool names
+    mcp_servers TEXT,                    -- JSON: MCP server configs
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pipelines (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    steps TEXT NOT NULL,                 -- JSON: [{agent_id, input_mapping, condition}]
+    schedule TEXT,                       -- cron expression (null = manual)
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY,
+    agent_id INTEGER REFERENCES agents(id),
+    pipeline_id INTEGER REFERENCES pipelines(id),
+    pipeline_step INTEGER,
+    started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    status TEXT DEFAULT 'running',       -- running, completed, failed, cancelled
+    input TEXT,
+    output TEXT,
+    tokens_used INTEGER,
+    error TEXT,
+    triggered_by TEXT                    -- manual, schedule, pipeline
+);
+
+CREATE TABLE IF NOT EXISTS reindex_requests (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    requested_by TEXT,
+    reason TEXT,
+    status TEXT DEFAULT 'pending',       -- pending, approved, denied, completed
+    resolved_at TEXT
+);
+
+-- Alpha Builds — Docker container-based project sandboxes
+CREATE TABLE IF NOT EXISTS alpha_builds (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    container_id TEXT,                   -- Docker container ID
+    container_name TEXT,                 -- Human-readable name
+    image TEXT,                          -- Docker image used
+    status TEXT DEFAULT 'stopped',       -- building, running, stopped, failed
+    ports TEXT,                          -- JSON: {host_port: container_port}
+    command TEXT,                        -- Startup command
+    started_at TEXT,
+    stopped_at TEXT,
+    build_log TEXT                       -- Last build output
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reindex_requests_status ON reindex_requests(status, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alpha_builds_project ON alpha_builds(project_id, status);
+
+-- Indexing runs — tracks custodian indexing pipeline executions
+CREATE TABLE IF NOT EXISTS indexing_runs (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    status TEXT DEFAULT 'running',      -- running, completed, failed
+    started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    error TEXT,
+    log_path TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_indexing_runs_project ON indexing_runs(project_id, started_at DESC);
+
+-- Ticker config — toggle which indicators appear in the sandbox ticker bar
+CREATE TABLE IF NOT EXISTS ticker_config (
+    key TEXT PRIMARY KEY,
+    enabled INTEGER DEFAULT 1
+);
+
+-- Device pairing — remote devices connected to this Workbench
+CREATE TABLE IF NOT EXISTS devices (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    hostname TEXT,
+    tailscale_ip TEXT,
+    ssh_pubkey TEXT,
+    ssh_fingerprint TEXT,
+    paired_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_seen TEXT,
+    status TEXT DEFAULT 'paired'    -- paired, revoked
+);
+
+CREATE TABLE IF NOT EXISTS pairing_codes (
+    id INTEGER PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL,
+    used_by_device_id INTEGER REFERENCES devices(id),
+    status TEXT DEFAULT 'pending'   -- pending, used, expired
+);

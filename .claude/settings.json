@@ -14,7 +14,8 @@
       "mcp__custodian__find_related_files",
       "mcp__custodian__get_recent_changes",
       "mcp__custodian__get_detective_insights",
-      "mcp__custodian__trigger_custodian"
+      "mcp__custodian__trigger_custodian",
+      "mcp__custodian__request_reindex"
     ]
   }
 }

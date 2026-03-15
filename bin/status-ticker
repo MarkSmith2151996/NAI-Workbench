@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Start the status ticker as a background process.
+# Writes scrolling status to terminal title bar.
+# Source this or run with: eval "$(bin/status-ticker)"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Find the right python
+if [ -f "$HOME/.custodian-venv/bin/python3" ]; then
+    PYTHON="$HOME/.custodian-venv/bin/python3"
+else
+    PYTHON="python3"
+fi
+
+# Kill any existing ticker for this terminal
+pkill -f "status_ticker.py" 2>/dev/null
+
+# Start ticker in background, detached from terminal signals
+nohup "$PYTHON" "$WORKBENCH_DIR/custodian/status_ticker.py" > /dev/null 2>&1 &
+TICKER_PID=$!
+disown $TICKER_PID 2>/dev/null
+
+# Clean up on shell exit
+trap "kill $TICKER_PID 2>/dev/null" EXIT

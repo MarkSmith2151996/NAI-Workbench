@@ -8,9 +8,11 @@ set -euo pipefail
 
 PROJECT_NAME="$1"
 PROJECT_PATH="$2"
+RUN_ID="${3:-}"  # Optional: indexing_runs row ID for status tracking
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMP_DIR="/tmp/custodian"
-VENV_DIR="$SCRIPT_DIR/.venv"
+VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
+DB_PATH="$SCRIPT_DIR/custodian.db"
 
 # Colors for output
 RED='\033[0;31m'
@@ -24,6 +26,25 @@ success() { echo -e "${GREEN}[custodian]${NC} $1"; }
 warn() { echo -e "${YELLOW}[custodian]${NC} $1"; }
 error() { echo -e "${RED}[custodian]${NC} $1"; }
 
+# Status tracking via indexing_runs table
+_update_run_status() {
+    local status="$1"
+    local err_msg="${2:-}"
+    if [ -n "$RUN_ID" ] && [ -f "$DB_PATH" ]; then
+        sqlite3 "$DB_PATH" "UPDATE indexing_runs SET status='$status', finished_at=datetime('now'), error=$([ -n "$err_msg" ] && echo "'$err_msg'" || echo "NULL") WHERE id=$RUN_ID;" 2>/dev/null || true
+    fi
+}
+
+_on_error() {
+    local exit_code=$?
+    local line_no=$1
+    error "Pipeline failed at line $line_no (exit code $exit_code)"
+    _update_run_status "failed" "Failed at line $line_no (exit $exit_code)"
+    exit $exit_code
+}
+
+trap '_on_error $LINENO' ERR
+
 # Validate inputs
 if [ -z "$PROJECT_NAME" ] || [ -z "$PROJECT_PATH" ]; then
     error "Usage: index_project.sh <project_name> <project_path>"
@@ -35,9 +56,11 @@ if [ ! -d "$PROJECT_PATH" ]; then
     exit 1
 fi
 
-# Activate venv if it exists
-if [ -d "$VENV_DIR" ]; then
-    source "$VENV_DIR/Scripts/activate" 2>/dev/null || source "$VENV_DIR/bin/activate" 2>/dev/null || true
+# Verify venv python exists
+if [ ! -f "$VENV_PYTHON" ]; then
+    error "Custodian venv not found at $VENV_PYTHON"
+    error "Create it: python3 -m venv ~/.custodian-venv && ~/.custodian-venv/bin/pip install -r $SCRIPT_DIR/requirements.txt"
+    exit 1
 fi
 
 mkdir -p "$TEMP_DIR"
@@ -87,12 +110,12 @@ success "Repomix output: $(wc -c < "$REPOMIX_OUTPUT") bytes"
 
 # ── Step 2: tree-sitter symbol extraction ─────────────────────────────
 log "Step 2/6: Extracting symbols with tree-sitter..."
-python "$SCRIPT_DIR/parse_symbols.py" "$PROJECT_PATH" > "$SYMBOLS_OUTPUT.full" 2>/dev/null || {
+$VENV_PYTHON "$SCRIPT_DIR/parse_symbols.py" "$PROJECT_PATH" > "$SYMBOLS_OUTPUT.full" 2>/dev/null || {
     warn "tree-sitter parsing failed, continuing with empty symbols"
     echo "[]" > "$SYMBOLS_OUTPUT.full"
 }
 # Filter: drop constants (bloat), keep functions/components/classes/types/hooks/stores, cap at 500
-python -c "
+$VENV_PYTHON -c "
 import json, sys
 with open(sys.argv[1]) as f:
     symbols = json.load(f)
@@ -108,7 +131,7 @@ print(f'{len(symbols)} total -> {len(filtered)} kept')
     cp "$SYMBOLS_OUTPUT.full" "$SYMBOLS_OUTPUT"
 }
 rm -f "$SYMBOLS_OUTPUT.full"
-SYMBOL_COUNT=$(python -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$SYMBOLS_OUTPUT" 2>/dev/null || echo "0")
+SYMBOL_COUNT=$($VENV_PYTHON -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$SYMBOLS_OUTPUT" 2>/dev/null || echo "0")
 success "Extracted $SYMBOL_COUNT symbols (filtered)"
 
 # ── Step 3: git log ───────────────────────────────────────────────────
@@ -125,7 +148,7 @@ success "Git history collected"
 # ── Step 4: Get custodian prompt ──────────────────────────────────────
 log "Step 4/6: Loading custodian prompt..."
 # Use init_db.py's directory to find the DB (resolves Windows paths correctly)
-CUSTODIAN_PROMPT=$(python -c "
+CUSTODIAN_PROMPT=$($VENV_PYTHON -c "
 import sqlite3, os, sys
 db_dir = os.path.dirname(os.path.abspath(sys.argv[1]))
 db = os.path.join(db_dir, 'custodian.db')
@@ -187,7 +210,7 @@ success "Sonnet analysis complete: $(wc -c < "$SONNET_OUTPUT") bytes"
 
 # ── Step 6: Store fossil in SQLite ────────────────────────────────────
 log "Step 6/6: Storing fossil in database..."
-python "$SCRIPT_DIR/store_fossil.py" "$PROJECT_NAME" "$SONNET_OUTPUT"
+$VENV_PYTHON "$SCRIPT_DIR/store_fossil.py" "$PROJECT_NAME" "$SONNET_OUTPUT"
 
 if [ $? -eq 0 ]; then
     success "✓ Fossil stored successfully for $PROJECT_NAME"
@@ -198,5 +221,8 @@ fi
 
 # Cleanup temp files
 rm -f "$REPOMIX_OUTPUT" "$SYMBOLS_OUTPUT" "$GIT_LOG_OUTPUT" "$GIT_DIFF_OUTPUT" "$SONNET_INPUT" "$SONNET_OUTPUT" "$SONNET_STDERR"
+
+# Mark indexing run as completed
+_update_run_status "completed"
 
 success "Done! Use 'get_project_fossil(\"$PROJECT_NAME\")' in MCP to access the fossil."

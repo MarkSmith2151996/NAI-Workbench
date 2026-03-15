@@ -25,15 +25,15 @@
       }
     }
   },
-  "penpot": {
-    "icon": "pen-nib",
-    "label": "Penpot",
+  "excalidraw": {
+    "icon": "paintbrush",
+    "label": "Draw",
     "color": "#6c63ff",
     "blockdef": {
       "meta": {
         "view": "web",
-        "url": "http://localhost:9001",
-        "pinnedurl": "http://localhost:9001"
+        "url": "https://excalidraw.com",
+        "pinnedurl": "https://excalidraw.com"
       }
     }
   },
@@ -49,6 +49,19 @@
       }
     }
   },
+  "sticky-notes": {
+    "icon": "note-sticky",
+    "label": "Notes",
+    "color": "#f9e2af",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "wsl://Ubuntu-24.04",
+        "cmd": "/home/dev/projects/nai-workbench/bin/notes-session"
+      }
+    }
+  },
   "wsl-terminal": {
     "icon": "brands@linux",
     "label": "Terminal",
@@ -58,6 +71,18 @@
         "view": "term",
         "controller": "shell",
         "connection": "wsl://Ubuntu-24.04"
+      }
+    }
+  },
+  "powershell": {
+    "icon": "terminal",
+    "label": "PowerShell",
+    "color": "#0078d4",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "shell",
+        "cmd": "powershell.exe"
       }
     }
   }

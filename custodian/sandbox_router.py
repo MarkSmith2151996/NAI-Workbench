@@ -9,8 +9,11 @@ Rewrites localhost URLs to match the client's host (for Tailscale/remote access)
 
 import json
 import os
+import secrets
+import string
 import subprocess
 import sqlite3
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custodian.db")
@@ -518,6 +521,162 @@ def _get_ticker_config():
     return defaults
 
 
+AUTHORIZED_KEYS_PATH = os.path.expanduser("~/.ssh/authorized_keys")
+SETUP_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "setup-device")
+
+
+def _generate_pairing_code():
+    """Generate a pairing code (NAI-XXXX) and store it with 10-min expiry."""
+    chars = string.ascii_uppercase + string.digits
+    # Remove ambiguous characters
+    chars = chars.replace("O", "").replace("0", "").replace("I", "").replace("1", "").replace("L", "")
+    suffix = "".join(secrets.choice(chars) for _ in range(4))
+    code = f"NAI-{suffix}"
+    expires = (datetime.utcnow() + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pairing_codes "
+            "(id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, "
+            "created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, "
+            "used_by_device_id INTEGER, status TEXT DEFAULT 'pending')"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS devices "
+            "(id INTEGER PRIMARY KEY, name TEXT NOT NULL, hostname TEXT, "
+            "tailscale_ip TEXT, ssh_pubkey TEXT, ssh_fingerprint TEXT, "
+            "paired_at TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT, "
+            "status TEXT DEFAULT 'paired')"
+        )
+        # Expire any old pending codes
+        conn.execute(
+            "UPDATE pairing_codes SET status = 'expired' "
+            "WHERE status = 'pending' AND expires_at < datetime('now')"
+        )
+        conn.execute(
+            "INSERT INTO pairing_codes (code, expires_at) VALUES (?, ?)",
+            (code, expires),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        return None, str(e)
+    return code, expires
+
+
+def _validate_and_pair(data):
+    """Validate a pairing code and register the device."""
+    code = data.get("code", "").strip().upper()
+    name = data.get("name", "").strip()
+    hostname = data.get("hostname", "").strip()
+    ssh_pubkey = data.get("ssh_pubkey", "").strip()
+    tailscale_ip = data.get("tailscale_ip", "").strip()
+
+    if not code or not name or not ssh_pubkey:
+        return {"error": "Missing required fields: code, name, ssh_pubkey"}, 400
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM pairing_codes WHERE code = ?", (code,)
+        ).fetchone()
+
+        if not row:
+            conn.close()
+            return {"error": "Invalid pairing code"}, 403
+
+        if row["status"] != "pending":
+            conn.close()
+            return {"error": f"Code already {row['status']}"}, 403
+
+        if row["expires_at"] < datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"):
+            conn.execute(
+                "UPDATE pairing_codes SET status = 'expired' WHERE id = ?",
+                (row["id"],),
+            )
+            conn.commit()
+            conn.close()
+            return {"error": "Code expired"}, 403
+
+        # Compute SSH fingerprint
+        fingerprint = ""
+        try:
+            proc = subprocess.run(
+                ["ssh-keygen", "-lf", "-"],
+                input=ssh_pubkey, capture_output=True, text=True, timeout=5,
+            )
+            if proc.returncode == 0:
+                fingerprint = proc.stdout.strip().split()[1] if proc.stdout.strip() else ""
+        except Exception:
+            pass
+
+        # Insert device
+        cur = conn.execute(
+            "INSERT INTO devices (name, hostname, tailscale_ip, ssh_pubkey, ssh_fingerprint) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, hostname, tailscale_ip, ssh_pubkey, fingerprint),
+        )
+        device_id = cur.lastrowid
+
+        # Mark code as used
+        conn.execute(
+            "UPDATE pairing_codes SET status = 'used', used_by_device_id = ? WHERE id = ?",
+            (device_id, row["id"]),
+        )
+        conn.commit()
+        conn.close()
+
+        # Append pubkey to authorized_keys
+        os.makedirs(os.path.dirname(AUTHORIZED_KEYS_PATH), exist_ok=True)
+        with open(AUTHORIZED_KEYS_PATH, "a") as f:
+            # Add comment with device name for easy identification
+            key_line = ssh_pubkey if ssh_pubkey.endswith("\n") else ssh_pubkey + "\n"
+            if not key_line.rstrip().endswith(name):
+                key_line = key_line.rstrip() + f" # paired-device:{name}\n"
+            f.write(key_line)
+
+        return {"status": "paired", "device_id": device_id, "fingerprint": fingerprint}, 200
+
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+def _get_devices():
+    """Get all devices from the DB."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS devices "
+            "(id INTEGER PRIMARY KEY, name TEXT NOT NULL, hostname TEXT, "
+            "tailscale_ip TEXT, ssh_pubkey TEXT, ssh_fingerprint TEXT, "
+            "paired_at TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT, "
+            "status TEXT DEFAULT 'paired')"
+        )
+        rows = conn.execute(
+            "SELECT id, name, hostname, tailscale_ip, ssh_fingerprint, paired_at, last_seen, status "
+            "FROM devices ORDER BY paired_at DESC"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _get_tailscale_ip():
+    """Get this machine's Tailscale IP."""
+    try:
+        proc = subprocess.run(
+            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except Exception:
+        pass
+    return "100.95.20.98"  # fallback default
+
+
 class SandboxRouterHandler(BaseHTTPRequestHandler):
     def _rewrite_url(self, url):
         """Replace localhost with the host the client used to reach us."""
@@ -574,11 +733,81 @@ class SandboxRouterHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body.encode())
 
+        elif self.path == '/api/devices':
+            body = json.dumps(_get_devices())
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        elif self.path == '/setup':
+            # Serve the setup script with the PC's Tailscale IP baked in
+            pc_ip = _get_tailscale_ip()
+            try:
+                with open(SETUP_SCRIPT_PATH, "r") as f:
+                    script = f.read()
+                script = script.replace("__PC_TAILSCALE_IP__", pc_ip)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(script.encode())
+            except FileNotFoundError:
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Setup script not found")
+
         else:
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             self.wfile.write(ROUTER_HTML.encode())
+
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+
+        if self.path == '/api/pair/generate':
+            code, expires = _generate_pairing_code()
+            if code:
+                resp = json.dumps({"code": code, "expires_at": expires})
+                status = 200
+            else:
+                resp = json.dumps({"error": expires})  # expires holds error msg
+                status = 500
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp.encode())
+
+        elif self.path == '/api/pair':
+            try:
+                data = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                data = {}
+            result, status = _validate_and_pair(data)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+
+        else:
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Not found"}).encode())
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def log_message(self, format, *args):
         pass  # Suppress request logging

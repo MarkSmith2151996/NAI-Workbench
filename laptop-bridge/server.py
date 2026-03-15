@@ -531,9 +531,54 @@ def create_starlette_app():
     async def health(request: Request):
         return JSONResponse({"status": "ok", "server": "laptop-bridge"})
 
+    async def handle_tool(request: Request):
+        """Direct HTTP tool invocation — bypasses SSE/MCP protocol.
+        POST /tool with {"tool": "laptop_read_file", "arguments": {...}}
+        """
+        try:
+            body = await request.json()
+            tool_name = body.get("tool", "")
+            arguments = body.get("arguments", {})
+            result = await call_tool(tool_name, arguments)
+            # Extract text from TextContent list
+            texts = [c.text for c in result if hasattr(c, "text")]
+            return JSONResponse({"result": texts[0] if len(texts) == 1 else texts})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    async def handle_download(request: Request):
+        """Serve a file as raw bytes for binary transfer.
+        GET /download?path=/home/LaManna/file.png
+        """
+        file_path = request.query_params.get("path", "")
+        if not file_path:
+            return Response("Missing 'path' query parameter", status_code=400)
+        resolved = str(Path(file_path).resolve())
+        if _is_blocked(resolved):
+            return Response("Path is blocked", status_code=403)
+        if not os.path.isfile(resolved):
+            return Response(f"File not found: {resolved}", status_code=404)
+        try:
+            import mimetypes
+            content_type = mimetypes.guess_type(resolved)[0] or "application/octet-stream"
+            with open(resolved, "rb") as f:
+                data = f.read()
+            return Response(
+                content=data,
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{os.path.basename(resolved)}"',
+                    "Content-Length": str(len(data)),
+                },
+            )
+        except Exception as e:
+            return Response(f"Error reading file: {e}", status_code=500)
+
     starlette_app = Starlette(
         routes=[
             Route("/health", endpoint=health, methods=["GET"]),
+            Route("/tool", endpoint=handle_tool, methods=["POST"]),
+            Route("/download", endpoint=handle_download, methods=["GET"]),
             Route("/sse", endpoint=handle_sse),
             Mount("/messages/", app=sse_transport.handle_post_message),
         ],

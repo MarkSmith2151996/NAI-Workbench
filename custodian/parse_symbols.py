@@ -117,6 +117,12 @@ def get_name_from_node(node, source_bytes, lang):
             if child.type in ("function_definition", "class_definition"):
                 return get_name_from_node(child, source_bytes, lang)
 
+    # For Go type_declaration → dig into type_spec child to find the name
+    if node.type == "type_declaration":
+        for child in node.children:
+            if child.type == "type_spec":
+                return get_name_from_node(child, source_bytes, lang)
+
     return None
 
 
@@ -163,6 +169,19 @@ def classify_symbol(name, node_type, file_path, source_bytes, node):
         if file_path.endswith((".ts", ".tsx", ".js", ".jsx")):
             return "store"
 
+    # Go type_declaration: classify as struct, interface, or type based on type_spec children
+    if file_path.endswith(".go") and node.type == "type_declaration":
+        for child in node.children:
+            if child.type == "type_spec":
+                for gc in child.children:
+                    if gc.type == "struct_type":
+                        return "class"
+                    if gc.type == "interface_type":
+                        return "interface"
+                    if gc.type == "function_type":
+                        return "function"
+                return "type"  # Generic type alias
+
     return None  # Use default classification
 
 
@@ -197,7 +216,7 @@ def extract_symbols(file_path, source_bytes=None):
 
         if node.type in queries:
             name = get_name_from_node(node, source_bytes, lang_name)
-            if name and len(name) > 1 and not name.startswith("_"):
+            if name and len(name) > 1 and not (name.startswith("__") and name.endswith("__")):
                 sym_type = node_type_map or "function"
 
                 # Refine classification

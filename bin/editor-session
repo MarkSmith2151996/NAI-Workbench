@@ -28,4 +28,8 @@ if [ ! -f "$WORKBENCH_DIR/custodian/custodian.db" ]; then
 fi
 
 cd "$WORKBENCH_DIR"
+
+# Start status ticker in terminal title bar
+source "$SCRIPT_DIR/status-ticker"
+
 exec "$PYTHON" custodian/editor.py

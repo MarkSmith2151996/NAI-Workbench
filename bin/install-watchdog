@@ -8,7 +8,13 @@ set -euo pipefail
 
 SERVICE_NAME="workbench-watchdog"
 VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
-WATCHDOG_SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/custodian/watchdog.py"
+# Resolve script path — prefer ~/projects/nai-workbench (no spaces) over /mnt/c path
+_RAW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -d "$HOME/projects/nai-workbench/custodian" ]; then
+    WATCHDOG_SCRIPT="$HOME/projects/nai-workbench/custodian/watchdog.py"
+else
+    WATCHDOG_SCRIPT="$_RAW_ROOT/custodian/watchdog.py"
+fi
 SUDOERS_FILE="/etc/sudoers.d/workbench-watchdog"
 
 echo "=== NAI Workbench Watchdog Installer ==="

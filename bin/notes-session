@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# ADMIN — Launch the Custodian Admin TUI
+# NOTES — Launch the Sticky Notes TUI
 # Widget entry point for Wave Terminal
-# Works on both Windows (Git Bash) and WSL (via SSH from laptop)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKBENCH_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Use venv python directly — no 'source activate' needed
-# This works in Wave's cmd controller which doesn't support 'source'
 VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
 LOCAL_PYTHON="$WORKBENCH_DIR/custodian/.venv/bin/python3"
 LOCAL_PYTHON_WIN="$WORKBENCH_DIR/custodian/.venv/Scripts/python.exe"
@@ -28,8 +26,4 @@ if [ ! -f "$WORKBENCH_DIR/custodian/custodian.db" ]; then
 fi
 
 cd "$WORKBENCH_DIR"
-
-# Start status ticker in terminal title bar
-source "$SCRIPT_DIR/status-ticker"
-
-exec "$PYTHON" custodian/admin.py
+exec "$PYTHON" custodian/sticky_notes.py

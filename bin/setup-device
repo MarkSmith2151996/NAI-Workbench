@@ -1,0 +1,244 @@
+#!/bin/bash
+# NAI Workbench — Device Pairing Setup
+# Run on a new device to pair it with the Workbench PC.
+#
+# Usage:
+#   curl -sL http://PC_IP:7777/setup | bash
+#   bash bin/setup-device
+set -uo pipefail
+
+# Default PC IP — overwritten when served via /setup endpoint
+PC_IP="${NAI_PC_IP:-__PC_TAILSCALE_IP__}"
+SSH_PORT=2222
+API_PORT=7777
+
+# ANSI colors
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+DIM='\033[0;90m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
+fail() { echo -e "  ${RED}✗${NC} $1"; }
+warn() { echo -e "  ${YELLOW}!${NC} $1"; }
+info() { echo -e "  ${DIM}$1${NC}"; }
+
+echo ""
+echo -e "${BOLD}╔══════════════════════════════════════╗${NC}"
+echo -e "${BOLD}║     NAI Workbench — Device Setup     ║${NC}"
+echo -e "${BOLD}╚══════════════════════════════════════╝${NC}"
+echo ""
+
+# ── 1. Detect OS ──────────────────────────────────────────────
+echo -e "${CYAN}[1/8] Detecting OS${NC}"
+OS="unknown"
+if [[ "$(uname -s)" == "Linux" ]]; then
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS="$ID"
+        ok "Linux — $PRETTY_NAME"
+    else
+        OS="linux"
+        ok "Linux (unknown distro)"
+    fi
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+    OS="macos"
+    ok "macOS — $(sw_vers -productVersion 2>/dev/null || echo 'unknown')"
+else
+    OS="$(uname -s)"
+    warn "Detected: $OS (may need manual steps)"
+fi
+echo ""
+
+# ── 2. Check Tailscale ───────────────────────────────────────
+echo -e "${CYAN}[2/8] Checking Tailscale${NC}"
+if command -v tailscale &>/dev/null; then
+    TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
+    if [ -n "$TS_IP" ]; then
+        ok "Tailscale installed (IP: $TS_IP)"
+    else
+        warn "Tailscale installed but not connected"
+        info "Run: sudo tailscale up"
+    fi
+else
+    fail "Tailscale not installed"
+    echo ""
+    echo -e "${YELLOW}Install Tailscale first:${NC}"
+    case "$OS" in
+        arch)   echo "  sudo pacman -S tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up" ;;
+        ubuntu|debian) echo "  curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up" ;;
+        fedora) echo "  sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up" ;;
+        macos)  echo "  brew install tailscale  (or install from App Store)" ;;
+        *)      echo "  See: https://tailscale.com/download" ;;
+    esac
+    echo ""
+    exit 1
+fi
+echo ""
+
+# ── 3. PC Tailscale IP ───────────────────────────────────────
+echo -e "${CYAN}[3/8] PC Connection${NC}"
+# If the placeholder wasn't replaced (running locally, not via /setup), prompt
+if [[ "$PC_IP" == "__PC_TAILSCALE_IP__" ]]; then
+    PC_IP="100.95.20.98"
+fi
+read -rp "  PC Tailscale IP [$PC_IP]: " user_ip
+PC_IP="${user_ip:-$PC_IP}"
+echo ""
+
+# ── 4. Verify PC reachable ───────────────────────────────────
+echo -e "${CYAN}[4/8] Testing connectivity${NC}"
+if ping -c 1 -W 3 "$PC_IP" &>/dev/null; then
+    ok "Tailscale tunnel to PC ($PC_IP)"
+else
+    fail "Cannot reach $PC_IP — is Tailscale connected?"
+    exit 1
+fi
+
+if curl -sf --connect-timeout 5 "http://${PC_IP}:${API_PORT}/api/health" >/dev/null 2>&1; then
+    ok "Workbench API reachable (port $API_PORT)"
+else
+    fail "Cannot reach Workbench API at http://${PC_IP}:${API_PORT}/api/health"
+    info "Is the sandbox router running? (check Admin TUI)"
+    exit 1
+fi
+echo ""
+
+# ── 5. SSH Key ────────────────────────────────────────────────
+echo -e "${CYAN}[5/8] SSH Key${NC}"
+KEY_FILE="$HOME/.ssh/id_ed25519"
+if [ -f "$KEY_FILE" ]; then
+    ok "SSH key exists ($KEY_FILE)"
+else
+    info "Generating new SSH key..."
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+    ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "$(whoami)@$(hostname)"
+    if [ $? -eq 0 ]; then
+        ok "SSH key generated"
+    else
+        fail "Failed to generate SSH key"
+        exit 1
+    fi
+fi
+PUBKEY=$(cat "${KEY_FILE}.pub")
+echo ""
+
+# ── 6. Pairing Code ──────────────────────────────────────────
+echo -e "${CYAN}[6/8] Device Pairing${NC}"
+info "Enter the pairing code from the Admin TUI Devices tab"
+read -rp "  Pairing code: " PAIR_CODE
+
+if [ -z "$PAIR_CODE" ]; then
+    fail "No pairing code entered"
+    exit 1
+fi
+
+# Normalize code to uppercase
+PAIR_CODE=$(echo "$PAIR_CODE" | tr '[:lower:]' '[:upper:]')
+
+# Get device info
+DEVICE_NAME="${DEVICE_NAME:-}"
+if [ -z "$DEVICE_NAME" ]; then
+    DEFAULT_NAME="$(hostname)"
+    read -rp "  Device name [$DEFAULT_NAME]: " DEVICE_NAME
+    DEVICE_NAME="${DEVICE_NAME:-$DEFAULT_NAME}"
+fi
+
+# POST to pairing API
+echo ""
+info "Pairing with Workbench..."
+PAIR_RESPONSE=$(curl -sf --connect-timeout 10 \
+    -X POST "http://${PC_IP}:${API_PORT}/api/pair" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"code\": \"$PAIR_CODE\",
+        \"name\": \"$DEVICE_NAME\",
+        \"hostname\": \"$(hostname)\",
+        \"ssh_pubkey\": \"$PUBKEY\",
+        \"tailscale_ip\": \"${TS_IP:-}\"
+    }" 2>&1)
+
+if [ $? -ne 0 ]; then
+    fail "Failed to connect to pairing API"
+    info "Response: $PAIR_RESPONSE"
+    exit 1
+fi
+
+# Check for error in response
+if echo "$PAIR_RESPONSE" | grep -q '"error"'; then
+    ERROR_MSG=$(echo "$PAIR_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','unknown'))" 2>/dev/null || echo "$PAIR_RESPONSE")
+    fail "Pairing failed: $ERROR_MSG"
+    exit 1
+fi
+
+ok "SSH key registered with Workbench!"
+echo ""
+
+# ── 7. Test SSH ───────────────────────────────────────────────
+echo -e "${CYAN}[7/8] Testing SSH${NC}"
+# Add host key (avoid prompt)
+ssh-keyscan -p "$SSH_PORT" "$PC_IP" >> "$HOME/.ssh/known_hosts" 2>/dev/null
+
+if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -p "$SSH_PORT" "dev@${PC_IP}" "echo ok" 2>/dev/null | grep -q "ok"; then
+    ok "SSH connection works (dev@${PC_IP}:${SSH_PORT})"
+else
+    warn "SSH test failed — key may need a moment to propagate"
+    info "Try manually: ssh -p $SSH_PORT dev@$PC_IP"
+fi
+echo ""
+
+# ── 8. Optional Setup ────────────────────────────────────────
+echo -e "${CYAN}[8/8] Environment Setup${NC}"
+
+# Clone repo if not present
+WORKBENCH_DIR="$HOME/NAI-Workbench"
+if [ -d "$WORKBENCH_DIR" ]; then
+    ok "NAI-Workbench repo exists ($WORKBENCH_DIR)"
+else
+    read -rp "  Clone NAI-Workbench repo? [Y/n]: " DO_CLONE
+    DO_CLONE="${DO_CLONE:-Y}"
+    if [[ "$DO_CLONE" =~ ^[Yy] ]]; then
+        info "Cloning..."
+        ssh -p "$SSH_PORT" "dev@${PC_IP}" "cat ~/NAI-Workbench/.git/config" 2>/dev/null | grep -q "url" && {
+            REPO_URL=$(ssh -p "$SSH_PORT" "dev@${PC_IP}" "git -C ~/NAI-Workbench remote get-url origin" 2>/dev/null)
+        }
+        if [ -n "${REPO_URL:-}" ]; then
+            git clone "$REPO_URL" "$WORKBENCH_DIR" 2>/dev/null && ok "Cloned from $REPO_URL" || warn "Clone failed"
+        else
+            warn "Could not determine repo URL — clone manually"
+        fi
+    fi
+fi
+
+# Configure Wave widgets if repo exists
+if [ -d "$WORKBENCH_DIR" ]; then
+    LAPTOP_WIDGETS="$WORKBENCH_DIR/config/wave/widgets-laptop.json"
+    WAVE_CONFIG_DIR="$HOME/.config/waveterm"
+    if [ -f "$LAPTOP_WIDGETS" ]; then
+        mkdir -p "$WAVE_CONFIG_DIR"
+        sed "s/100\.95\.20\.98/${PC_IP}/g; s/TAILSCALE_IP/${PC_IP}/g" \
+            "$LAPTOP_WIDGETS" > "$WAVE_CONFIG_DIR/widgets.json"
+        ok "Wave widgets configured (restart Wave to apply)"
+    fi
+fi
+echo ""
+
+# ── Summary ───────────────────────────────────────────────────
+echo -e "${BOLD}═══════════════════════════════════════${NC}"
+echo -e "${BOLD}  Setup Complete!${NC}"
+echo -e "${BOLD}═══════════════════════════════════════${NC}"
+echo ""
+echo -e "  ${GREEN}✓${NC} Device paired as: ${BOLD}$DEVICE_NAME${NC}"
+echo -e "  ${GREEN}✓${NC} SSH: ${DIM}ssh -p $SSH_PORT dev@$PC_IP${NC}"
+if [ -d "$WORKBENCH_DIR" ]; then
+    echo -e "  ${GREEN}✓${NC} Repo: $WORKBENCH_DIR"
+fi
+echo ""
+echo -e "${DIM}Optional next steps:${NC}"
+echo -e "  • Install Wave Terminal: ${DIM}https://waveterm.dev${NC}"
+echo -e "  • Install Claude Code:  ${DIM}npm install -g @anthropic-ai/claude-code${NC}"
+echo ""

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """NAI Workbench — ADMIN 01: Custodian Administration TUI.
 
-6 tabs:
+8 tabs:
 - Projects: Import from GitHub, register local, manage projects
 - Custodian: Index projects (trigger Sonnet)
 - Fossils: Browse fossil history, view details, compare
 - Detective: Run analysis, view insights, refine prompts
 - Status: System overview (DB stats, project status)
 - Editor: File browser + code editor + persistent Claude Code chat
+- Agent Factory: Create, configure, and run AI agents (Claude Agent SDK)
+- Alpha Builds: Docker container-based project sandboxes
 """
 
 import json
@@ -190,6 +192,265 @@ def get_db_stats():
     return stats
 
 
+# ── Agent Factory CRUD ────────────────────────────────────────────────
+
+
+def get_agents(status="active"):
+    """Get all agents, optionally filtered by status."""
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT a.*, p.name as project_name
+           FROM agents a
+           LEFT JOIN projects p ON p.id = a.project_id
+           WHERE a.status = ?
+           ORDER BY a.name""",
+        (status,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_agent(agent_id):
+    """Get a single agent by ID."""
+    conn = get_db()
+    row = conn.execute(
+        """SELECT a.*, p.name as project_name
+           FROM agents a
+           LEFT JOIN projects p ON p.id = a.project_id
+           WHERE a.id = ?""",
+        (agent_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def save_agent(name, system_prompt, description="", model="sonnet",
+               project_id=None, max_turns=20, tools=None, mcp_servers=None,
+               agent_id=None):
+    """Create or update an agent."""
+    conn = get_db()
+    tools_json = json.dumps(tools) if tools else None
+    mcp_json = json.dumps(mcp_servers) if mcp_servers else None
+    now = datetime.now().isoformat()
+
+    if agent_id:
+        conn.execute(
+            """UPDATE agents SET name=?, description=?, system_prompt=?, model=?,
+               project_id=?, max_turns=?, tools=?, mcp_servers=?, updated_at=?
+               WHERE id=?""",
+            (name, description, system_prompt, model, project_id, max_turns,
+             tools_json, mcp_json, now, agent_id),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO agents (name, description, system_prompt, model,
+               project_id, max_turns, tools, mcp_servers, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, description, system_prompt, model, project_id, max_turns,
+             tools_json, mcp_json, now),
+        )
+    conn.commit()
+    conn.close()
+
+
+def delete_agent(agent_id):
+    """Soft-delete an agent."""
+    conn = get_db()
+    conn.execute("UPDATE agents SET status = 'deleted' WHERE id = ?", (agent_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_pipelines(status="active"):
+    """Get all pipelines."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM pipelines WHERE status = ? ORDER BY name",
+        (status,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_pipeline(name, steps, description="", schedule=None, pipeline_id=None):
+    """Create or update a pipeline."""
+    conn = get_db()
+    steps_json = json.dumps(steps) if isinstance(steps, (list, dict)) else steps
+
+    if pipeline_id:
+        conn.execute(
+            "UPDATE pipelines SET name=?, description=?, steps=?, schedule=? WHERE id=?",
+            (name, description, steps_json, schedule, pipeline_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO pipelines (name, description, steps, schedule) VALUES (?, ?, ?, ?)",
+            (name, description, steps_json, schedule),
+        )
+    conn.commit()
+    conn.close()
+
+
+def delete_pipeline(pipeline_id):
+    """Soft-delete a pipeline."""
+    conn = get_db()
+    conn.execute("UPDATE pipelines SET status = 'deleted' WHERE id = ?", (pipeline_id,))
+    conn.commit()
+    conn.close()
+
+
+def create_agent_run(agent_id, input_text="", triggered_by="manual",
+                     pipeline_id=None, pipeline_step=None):
+    """Create a new agent run record. Returns the run ID."""
+    conn = get_db()
+    cursor = conn.execute(
+        """INSERT INTO agent_runs (agent_id, pipeline_id, pipeline_step, input,
+           triggered_by, status) VALUES (?, ?, ?, ?, ?, 'running')""",
+        (agent_id, pipeline_id, pipeline_step, input_text, triggered_by),
+    )
+    run_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return run_id
+
+
+def complete_agent_run(run_id, status="completed", output="",
+                       tokens_used=0, error=None):
+    """Mark an agent run as complete."""
+    conn = get_db()
+    conn.execute(
+        """UPDATE agent_runs SET status=?, output=?, tokens_used=?,
+           error=?, finished_at=datetime('now') WHERE id=?""",
+        (status, output, tokens_used, error, run_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_agent_runs(agent_id=None, limit=20):
+    """Get recent agent runs."""
+    conn = get_db()
+    if agent_id:
+        rows = conn.execute(
+            """SELECT ar.*, a.name as agent_name
+               FROM agent_runs ar
+               JOIN agents a ON a.id = ar.agent_id
+               WHERE ar.agent_id = ?
+               ORDER BY ar.started_at DESC LIMIT ?""",
+            (agent_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT ar.*, a.name as agent_name
+               FROM agent_runs ar
+               JOIN agents a ON a.id = ar.agent_id
+               ORDER BY ar.started_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_pending_reindex_requests():
+    """Get all pending reindex requests."""
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT rr.*, p.name as project_name
+           FROM reindex_requests rr
+           JOIN projects p ON p.id = rr.project_id
+           WHERE rr.status = 'pending'
+           ORDER BY rr.requested_at DESC"""
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def approve_reindex(request_id):
+    """Approve a reindex request and trigger indexing."""
+    conn = get_db()
+    req = conn.execute(
+        """SELECT rr.*, p.name as project_name, p.path as project_path
+           FROM reindex_requests rr
+           JOIN projects p ON p.id = rr.project_id
+           WHERE rr.id = ?""",
+        (request_id,),
+    ).fetchone()
+    if not req:
+        conn.close()
+        return None
+
+    conn.execute(
+        "UPDATE reindex_requests SET status='approved', resolved_at=datetime('now') WHERE id=?",
+        (request_id,),
+    )
+    conn.commit()
+    conn.close()
+    return dict(req)
+
+
+def deny_reindex(request_id):
+    """Deny a reindex request."""
+    conn = get_db()
+    conn.execute(
+        "UPDATE reindex_requests SET status='denied', resolved_at=datetime('now') WHERE id=?",
+        (request_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ── Alpha Builds CRUD ────────────────────────────────────────────────
+
+
+def get_alpha_builds(project_id=None):
+    """Get all alpha builds, optionally filtered by project."""
+    conn = get_db()
+    if project_id:
+        rows = conn.execute(
+            """SELECT ab.*, p.name as project_name
+               FROM alpha_builds ab
+               JOIN projects p ON p.id = ab.project_id
+               WHERE ab.project_id = ?
+               ORDER BY ab.id DESC""",
+            (project_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT ab.*, p.name as project_name
+               FROM alpha_builds ab
+               JOIN projects p ON p.id = ab.project_id
+               ORDER BY ab.id DESC"""
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_alpha_build(project_id, container_id=None, container_name=None,
+                     image=None, status="stopped", ports=None, command=None,
+                     build_log=None, build_id=None):
+    """Create or update an alpha build."""
+    conn = get_db()
+    ports_json = json.dumps(ports) if ports else None
+
+    if build_id:
+        conn.execute(
+            """UPDATE alpha_builds SET container_id=?, container_name=?, image=?,
+               status=?, ports=?, command=?, build_log=? WHERE id=?""",
+            (container_id, container_name, image, status, ports_json, command,
+             build_log, build_id),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO alpha_builds (project_id, container_id, container_name,
+               image, status, ports, command, build_log, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (project_id, container_id, container_name, image, status,
+             ports_json, command, build_log),
+        )
+    conn.commit()
+    conn.close()
+
+
 def register_project(name, path, stack=""):
     """Register a project in the custodian database."""
     conn = get_db()
@@ -324,6 +585,21 @@ Screen {
 .action-bar {
     height: 3;
     margin-bottom: 1;
+}
+
+#ticker-config-bar {
+    height: 3;
+    margin-bottom: 1;
+}
+
+#ticker-config-bar Switch {
+    width: auto;
+    margin-right: 0;
+}
+
+#ticker-config-bar Label {
+    margin-right: 2;
+    content-align: center middle;
 }
 
 .input-bar {
@@ -494,15 +770,95 @@ DataTable {
     background: $surface-lighten-1;
 }
 
-#sandbox-log {
-    height: 12;
+#agent-editor-form {
+    height: auto;
+    padding: 1;
+}
+
+#agent-prompt-textarea {
+    height: 8;
+    border: solid $primary;
+}
+
+#agent-run-log {
+    height: 1fr;
     border: solid $primary;
     margin-top: 1;
 }
 
-#sandbox-status-label {
+#agents-table {
+    height: auto;
+    max-height: 10;
+}
+
+#pipelines-table {
+    height: auto;
+    max-height: 8;
+}
+
+#runs-table {
+    height: auto;
+    max-height: 8;
+}
+
+#reindex-table {
+    height: auto;
+    max-height: 6;
+}
+
+#agents-left-panel {
+    width: 40;
+    border-right: solid $primary;
+}
+
+#agents-right-panel {
+    width: 1fr;
+}
+
+#builds-left-panel {
+    width: 35;
+    border-right: solid $primary;
+    overflow-y: auto;
+}
+
+#builds-right-panel {
+    width: 1fr;
+}
+
+#builds-log {
+    height: 1fr;
+    border: solid $primary;
+    margin-top: 1;
+}
+
+#build-info-label {
     padding: 1;
     color: $text;
+}
+
+.build-card {
+    margin: 0 1 1 0;
+    padding: 1;
+    border: solid $primary;
+    height: auto;
+    min-width: 30;
+    text-align: left;
+}
+
+.build-card.running {
+    border: solid green;
+}
+
+.build-card.stopped {
+    border: solid gray;
+}
+
+.build-card.building {
+    border: solid yellow;
+}
+
+.build-card.failed {
+    border: solid red;
 }
 """
 
@@ -521,6 +877,9 @@ class CustodianAdmin(App):
         Binding("d", "focus_tab('detective')", "Detective"),
         Binding("s", "focus_tab('status')", "Status"),
         Binding("e", "focus_tab('editor')", "Editor"),
+        Binding("a", "focus_tab('agents')", "Agents"),
+        Binding("b", "focus_tab('builds')", "Builds"),
+        Binding("v", "focus_tab('devices')", "Devices"),
     ]
 
     def __init__(self):
@@ -541,12 +900,20 @@ class CustodianAdmin(App):
         self._claude_edited_files: set = set()
         self._workbench_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._session_file = os.path.join(os.path.expanduser("~"), ".custodian_claude_session")
+        # Agent Factory state
+        self._selected_agent_id: int | None = None
+        self._agent_running: bool = False
+        # Alpha Builds state
+        self._selected_build_id: int | None = None
+        self._build_card_gen = 0
+        # Devices tab state
+        self._selected_device_id: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static("NAI WORKBENCH — ADMIN 01", id="title-bar")
 
-        with TabbedContent("Projects", "Custodian", "Fossils", "Detective", "Status", "Editor"):
+        with TabbedContent("Projects", "Custodian", "Fossils", "Detective", "Status", "Editor", "Agent Factory", "Alpha Builds", "Devices"):
             # ── Projects Tab ─────────────────────────────────
             with TabPane("Projects", id="tab-projects"):
                 with VerticalScroll(classes="tab-content"):
@@ -647,26 +1014,24 @@ class CustodianAdmin(App):
                     with Horizontal(classes="action-bar"):
                         yield Button("Update Workbench", variant="warning", id="btn-update-workbench")
                         yield Static("", id="update-status-label")
+                    yield Static("Ticker Indicators", classes="section-header")
+                    with Horizontal(id="ticker-config-bar"):
+                        yield Switch(value=True, id="ticker-indexing")
+                        yield Label("Indexing")
+                        yield Switch(value=True, id="ticker-sandbox")
+                        yield Label("Sandbox")
+                        yield Switch(value=True, id="ticker-fossils")
+                        yield Label("Fossils")
+                        yield Switch(value=True, id="ticker-shared_files")
+                        yield Label("Shared")
+                        yield Switch(value=True, id="ticker-projects")
+                        yield Label("Projects")
                     yield Static("System Status", classes="section-header")
                     yield DataTable(id="status-projects-table")
                     yield Static("Database", classes="section-header")
                     yield Static("", id="db-stats")
                     yield Static("Recent MCP Queries", classes="section-header")
                     yield DataTable(id="query-log-table")
-
-                    yield Static("Sandbox", classes="section-header")
-                    with Horizontal(classes="action-bar"):
-                        yield Select(
-                            [],
-                            prompt="Select project...",
-                            id="sandbox-project-select",
-                            classes="project-selector",
-                        )
-                        yield Button("Start", variant="success", id="btn-sandbox-start")
-                        yield Button("Stop", variant="error", id="btn-sandbox-stop")
-                        yield Button("Open Preview", variant="primary", id="btn-sandbox-preview")
-                    yield Static("No sandbox running", id="sandbox-status-label")
-                    yield RichLog(id="sandbox-log", highlight=True, markup=True)
 
             # ── Editor Tab ────────────────────────────────────
             with TabPane("Editor", id="tab-editor"):
@@ -713,6 +1078,89 @@ class CustodianAdmin(App):
                             yield Button("Send", variant="success", id="btn-claude-send")
                             yield Button("Stop", variant="error", id="btn-claude-stop")
 
+            # ── Agent Factory Tab ─────────────────────────────
+            with TabPane("Agent Factory", id="tab-agents"):
+                with Vertical(classes="tab-content"):
+                    yield Static("Agent Factory", classes="section-header")
+                    with Horizontal(classes="action-bar"):
+                        yield Button("New Agent", variant="success", id="btn-new-agent")
+                        yield Button("New Pipeline", variant="primary", id="btn-new-pipeline")
+                        yield Button("Run Selected", variant="warning", id="btn-run-agent")
+                        yield Button("Delete Agent", variant="error", id="btn-delete-agent")
+                    with Horizontal(id="agents-split"):
+                        with Vertical(id="agents-left-panel"):
+                            yield Static("Agents", classes="section-header")
+                            yield DataTable(id="agents-table")
+                            yield Static("Pipelines", classes="section-header")
+                            yield DataTable(id="pipelines-table")
+                        with Vertical(id="agents-right-panel"):
+                            yield Static("Agent Editor", classes="section-header")
+                            with Vertical(id="agent-editor-form"):
+                                with Horizontal(classes="input-bar"):
+                                    yield Input(placeholder="Agent name", id="agent-name-input", classes="name-input")
+                                    yield Select(
+                                        [("sonnet", "sonnet"), ("opus", "opus"), ("haiku", "haiku")],
+                                        value="sonnet",
+                                        id="agent-model-select",
+                                    )
+                                    yield Select(
+                                        [],
+                                        prompt="Project (optional)",
+                                        id="agent-project-select",
+                                        allow_blank=True,
+                                    )
+                                yield Input(placeholder="Description", id="agent-desc-input")
+                                yield TextArea(
+                                    "",
+                                    id="agent-prompt-textarea",
+                                )
+                                with Horizontal(classes="input-bar"):
+                                    yield Input(placeholder="Max turns (default 20)", id="agent-turns-input")
+                                    yield Button("Save Agent", variant="success", id="btn-save-agent")
+                            yield Static("Run History", classes="section-header")
+                            yield DataTable(id="runs-table")
+                    yield Static("Reindex Requests", classes="section-header")
+                    yield DataTable(id="reindex-table")
+                    yield Static("Run Log", classes="section-header")
+                    yield RichLog(id="agent-run-log", highlight=True, markup=True)
+
+            # ── Alpha Builds Tab ──────────────────────────────
+            with TabPane("Alpha Builds", id="tab-builds"):
+                with Vertical(classes="tab-content"):
+                    yield Static("Alpha Builds", classes="section-header")
+                    with Horizontal(classes="action-bar"):
+                        yield Select(
+                            [],
+                            prompt="Select project...",
+                            id="builds-project-select",
+                            classes="project-selector",
+                        )
+                        yield Button("Launch", variant="success", id="btn-launch-build")
+                        yield Button("Stop", variant="error", id="btn-stop-build")
+                        yield Button("Rebuild", variant="warning", id="btn-rebuild")
+                    with Horizontal(classes="action-bar"):
+                        yield Button("Shell", variant="primary", id="btn-shell-build")
+                        yield Button("Run Tests", variant="default", id="btn-build-test")
+                        yield Button("Install Deps", variant="default", id="btn-build-install")
+                        yield Button("Logs", variant="default", id="btn-build-logs")
+                    with Horizontal(id="builds-split"):
+                        with VerticalScroll(id="builds-left-panel"):
+                            pass  # Build cards populated dynamically
+                        with Vertical(id="builds-right-panel"):
+                            yield Static("No build selected", id="build-info-label")
+                            yield RichLog(id="builds-log", highlight=True, markup=True)
+
+            # ── Devices Tab ──────────────────────────────────────
+            with TabPane("Devices", id="tab-devices"):
+                with Vertical(classes="tab-content"):
+                    yield Static("Paired Devices", classes="section-header")
+                    yield DataTable(id="devices-table")
+                    with Horizontal(classes="action-bar"):
+                        yield Button("Generate Pairing Code", variant="success", id="btn-generate-pair-code")
+                        yield Button("Remove Device", variant="error", id="btn-remove-device")
+                    yield Static("", id="pairing-code-display")
+                    yield RichLog(id="devices-log", highlight=True, markup=True)
+
         yield Footer()
 
     def on_mount(self) -> None:
@@ -729,13 +1177,16 @@ class CustodianAdmin(App):
         self._refresh_detective_tab()
         self._refresh_status_tab()
         self._init_editor_tab()
+        self._refresh_agents_tab()
+        self._refresh_builds_tab()
+        self._refresh_devices_tab()
 
     def _load_projects(self):
         """Load projects and populate all select widgets."""
         self._projects = get_projects()
         options = [(p["name"], p["id"]) for p in self._projects]
 
-        for select_id in ["custodian-project-select", "fossil-project-select", "detective-project-select", "editor-project-select", "sandbox-project-select"]:
+        for select_id in ["custodian-project-select", "fossil-project-select", "detective-project-select", "editor-project-select", "agent-project-select", "builds-project-select"]:
             try:
                 select = self.query_one(f"#{select_id}", Select)
                 select.set_options(options)
@@ -1037,8 +1488,54 @@ class CustodianAdmin(App):
                 preview,
             )
 
+    def _load_ticker_config(self):
+        """Load ticker config from DB and set Switch values."""
+        keys = ["indexing", "sandbox", "fossils", "shared_files", "projects"]
+        try:
+            conn = get_db()
+            # Seed defaults if table is empty
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ticker_config (key TEXT PRIMARY KEY, enabled INTEGER DEFAULT 1)"
+            )
+            existing = conn.execute("SELECT COUNT(*) FROM ticker_config").fetchone()[0]
+            if existing == 0:
+                for k in keys:
+                    conn.execute("INSERT INTO ticker_config (key, enabled) VALUES (?, 1)", (k,))
+                conn.commit()
+            rows = conn.execute("SELECT key, enabled FROM ticker_config").fetchall()
+            conn.close()
+            config = {r["key"]: bool(r["enabled"]) for r in rows}
+            for k in keys:
+                try:
+                    sw = self.query_one(f"#ticker-{k}", Switch)
+                    sw.value = config.get(k, True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        """Handle ticker config switch toggles."""
+        sw_id = event.switch.id or ""
+        if not sw_id.startswith("ticker-"):
+            return
+        key = sw_id.removeprefix("ticker-")
+        try:
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO ticker_config (key, enabled) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET enabled = ?",
+                (key, int(event.value), int(event.value)),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
     def _refresh_status_tab(self):
         """Refresh the status tab."""
+        # Load ticker config switches from DB
+        self._load_ticker_config()
+
         table = self.query_one("#status-projects-table", DataTable)
         table.clear(columns=True)
         table.add_columns("Project", "Path", "Last Indexed", "Fossils", "Symbols")
@@ -1088,29 +1585,6 @@ class CustodianAdmin(App):
                 q["timestamp"] or "",
                 (q["query_params"] or "")[:60],
             )
-
-        # Refresh sandbox status
-        try:
-            sandbox = conn.execute(
-                """SELECT ss.*, p.name as project_name
-                   FROM sandbox_state ss
-                   JOIN projects p ON p.id = ss.project_id
-                   WHERE ss.status = 'running'
-                   ORDER BY ss.id DESC LIMIT 1"""
-            ).fetchone()
-            label = self.query_one("#sandbox-status-label", Static)
-            if sandbox:
-                preview = sandbox["preview_type"] or "unknown"
-                port_str = f" | port {sandbox['port']}" if sandbox["port"] else ""
-                tmux_str = f" | tmux: {sandbox['tmux_session']}" if sandbox.get("tmux_session") else ""
-                label.update(
-                    f"[green]running[/green] | {sandbox['project_name']} | "
-                    f"{sandbox['command']} ({preview}){port_str}{tmux_str}"
-                )
-            else:
-                label.update("No sandbox running")
-        except Exception:
-            pass
 
         conn.close()
 
@@ -1196,17 +1670,52 @@ class CustodianAdmin(App):
             self._do_new_claude_session()
         elif button_id == "btn-claude-resume":
             self._do_resume_claude_session()
-        # Sandbox controls
-        elif button_id == "btn-sandbox-start":
-            select = self.query_one("#sandbox-project-select", Select)
+        # Agent Factory tab
+        elif button_id == "btn-new-agent":
+            self._do_new_agent_form()
+        elif button_id == "btn-save-agent":
+            self._do_save_agent()
+        elif button_id == "btn-delete-agent":
+            self._do_delete_agent()
+        elif button_id == "btn-run-agent":
+            self._do_run_agent()
+        elif button_id == "btn-new-pipeline":
+            self._do_new_pipeline()
+        # Reindex request buttons
+        elif button_id and button_id.startswith("btn-approve-reindex-"):
+            req_id = int(button_id.split("-")[-1])
+            self._do_approve_reindex(req_id)
+        elif button_id and button_id.startswith("btn-deny-reindex-"):
+            req_id = int(button_id.split("-")[-1])
+            self._do_deny_reindex(req_id)
+        # Alpha Builds tab
+        elif button_id == "btn-launch-build":
+            select = self.query_one("#builds-project-select", Select)
             if isinstance(select.value, int):
-                self._do_sandbox_start(select.value)
+                self._do_launch_build(select.value)
             else:
                 self.notify("Select a project first", severity="warning")
-        elif button_id == "btn-sandbox-stop":
-            self._do_sandbox_stop()
-        elif button_id == "btn-sandbox-preview":
-            self._do_sandbox_open_preview()
+        elif button_id == "btn-stop-build":
+            self._do_stop_build()
+        elif button_id == "btn-rebuild":
+            self._do_rebuild()
+        elif button_id == "btn-shell-build":
+            self._do_shell_build()
+        elif button_id == "btn-build-test":
+            self._do_build_test()
+        elif button_id == "btn-build-install":
+            self._do_build_install()
+        elif button_id == "btn-build-logs":
+            self._do_build_logs()
+        elif button_id and button_id.startswith("btn-build-card-"):
+            build_id = int(button_id.split("-")[-1])
+            self._selected_build_id = build_id
+            self._show_build_info(build_id)
+        # Devices tab
+        elif button_id == "btn-generate-pair-code":
+            self._do_generate_pair_code()
+        elif button_id == "btn-remove-device":
+            self._do_remove_device()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         select_id = event.select.id
@@ -1227,6 +1736,10 @@ class CustodianAdmin(App):
             # One-click import: clicking a row immediately clones + registers it
             row_idx = event.cursor_row
             self._do_clone_gh_repo(row_idx)
+        elif table_id == "agents-table":
+            self._on_agent_selected(event)
+        elif table_id == "runs-table":
+            self._on_run_selected(event)
 
     def _show_fossil_detail(self, event):
         """Show full fossil details in the detail pane."""
@@ -1848,14 +2361,439 @@ class CustodianAdmin(App):
         except Exception as e:
             log.write(f"[bold red]Error: {e}[/bold red]")
 
-    # ── Sandbox Workers ──────────────────────────────────────────────
+    # ── Agent Factory Tab ──────────────────────────────────────────
+
+    def _refresh_agents_tab(self):
+        """Refresh all Agent Factory data tables."""
+        # Agents table
+        try:
+            table = self.query_one("#agents-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("ID", "Name", "Model", "Project", "Status")
+            table.cursor_type = "row"
+            for a in get_agents():
+                table.add_row(
+                    str(a["id"]), a["name"], a["model"],
+                    a.get("project_name") or "", a["status"],
+                )
+        except Exception:
+            pass
+
+        # Pipelines table
+        try:
+            ptable = self.query_one("#pipelines-table", DataTable)
+            ptable.clear(columns=True)
+            ptable.add_columns("ID", "Name", "Steps", "Schedule")
+            ptable.cursor_type = "row"
+            for p in get_pipelines():
+                steps = json.loads(p["steps"]) if p["steps"] else []
+                ptable.add_row(
+                    str(p["id"]), p["name"], str(len(steps)),
+                    p["schedule"] or "manual",
+                )
+        except Exception:
+            pass
+
+        # Runs table
+        try:
+            rtable = self.query_one("#runs-table", DataTable)
+            rtable.clear(columns=True)
+            rtable.add_columns("ID", "Agent", "Status", "Started", "Tokens")
+            rtable.cursor_type = "row"
+            for r in get_agent_runs(limit=15):
+                rtable.add_row(
+                    str(r["id"]), r["agent_name"], r["status"],
+                    (r["started_at"] or "")[:16], str(r.get("tokens_used") or ""),
+                )
+        except Exception:
+            pass
+
+        # Reindex requests
+        self._refresh_reindex_requests()
+
+    def _refresh_reindex_requests(self):
+        """Refresh the reindex requests table."""
+        try:
+            table = self.query_one("#reindex-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("ID", "Project", "Reason", "Requested", "Actions")
+            table.cursor_type = "row"
+            for req in get_pending_reindex_requests():
+                table.add_row(
+                    str(req["id"]),
+                    req["project_name"],
+                    (req["reason"] or "")[:50],
+                    (req["requested_at"] or "")[:16],
+                    "Select row → use buttons below",
+                )
+        except Exception:
+            pass
+
+    def _on_agent_selected(self, event):
+        """Load agent data into the editor form."""
+        try:
+            row_data = event.data_table.get_row(event.row_key)
+            agent_id = int(row_data[0])
+        except (IndexError, ValueError):
+            return
+
+        agent = get_agent(agent_id)
+        if not agent:
+            return
+
+        self._selected_agent_id = agent_id
+
+        try:
+            self.query_one("#agent-name-input", Input).value = agent["name"]
+            self.query_one("#agent-desc-input", Input).value = agent["description"] or ""
+            self.query_one("#agent-prompt-textarea", TextArea).load_text(
+                agent["system_prompt"] or ""
+            )
+            self.query_one("#agent-model-select", Select).value = agent["model"]
+            turns_input = self.query_one("#agent-turns-input", Input)
+            turns_input.value = str(agent["max_turns"] or 20)
+            if agent["project_id"]:
+                self.query_one("#agent-project-select", Select).value = agent["project_id"]
+        except Exception:
+            pass
+
+    def _on_run_selected(self, event):
+        """Show run output in the log."""
+        try:
+            row_data = event.data_table.get_row(event.row_key)
+            run_id = int(row_data[0])
+        except (IndexError, ValueError):
+            return
+
+        conn = get_db()
+        run = conn.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+        conn.close()
+
+        if not run:
+            return
+
+        log = self.query_one("#agent-run-log", RichLog)
+        log.clear()
+        log.write(f"[bold]Run #{run['id']}[/bold] — {run['status']}")
+        log.write(f"Started: {run['started_at']}")
+        if run["finished_at"]:
+            log.write(f"Finished: {run['finished_at']}")
+        if run["tokens_used"]:
+            log.write(f"Tokens: {run['tokens_used']}")
+        if run["error"]:
+            log.write(f"[red]Error: {run['error']}[/red]")
+        log.write("")
+        log.write("[bold]Output:[/bold]")
+        log.write(run["output"] or "(no output)")
+
+    def _do_new_agent_form(self):
+        """Clear the agent editor form for a new agent."""
+        self._selected_agent_id = None
+        try:
+            self.query_one("#agent-name-input", Input).value = ""
+            self.query_one("#agent-desc-input", Input).value = ""
+            self.query_one("#agent-prompt-textarea", TextArea).load_text("")
+            self.query_one("#agent-model-select", Select).value = "sonnet"
+            self.query_one("#agent-turns-input", Input).value = "20"
+        except Exception:
+            pass
+        self.notify("New agent — fill in the form and Save")
+
+    def _do_save_agent(self):
+        """Save the agent from the editor form."""
+        try:
+            name = self.query_one("#agent-name-input", Input).value.strip()
+            desc = self.query_one("#agent-desc-input", Input).value.strip()
+            prompt = self.query_one("#agent-prompt-textarea", TextArea).text.strip()
+            model = self.query_one("#agent-model-select", Select).value
+            turns_raw = self.query_one("#agent-turns-input", Input).value.strip()
+            max_turns = int(turns_raw) if turns_raw else 20
+            proj_select = self.query_one("#agent-project-select", Select)
+            project_id = proj_select.value if proj_select.value != Select.BLANK else None
+        except Exception as e:
+            self.notify(f"Form error: {e}", severity="error")
+            return
+
+        if not name:
+            self.notify("Agent name is required", severity="warning")
+            return
+        if not prompt:
+            self.notify("System prompt is required", severity="warning")
+            return
+
+        try:
+            save_agent(
+                name=name, system_prompt=prompt, description=desc,
+                model=model, project_id=project_id, max_turns=max_turns,
+                agent_id=self._selected_agent_id,
+            )
+            self.notify(f"Agent '{name}' saved")
+            self._refresh_agents_tab()
+        except Exception as e:
+            self.notify(f"Save failed: {e}", severity="error")
+
+    def _do_delete_agent(self):
+        """Delete the selected agent."""
+        if not self._selected_agent_id:
+            self.notify("Select an agent first", severity="warning")
+            return
+        agent = get_agent(self._selected_agent_id)
+        if agent:
+            delete_agent(self._selected_agent_id)
+            self.notify(f"Deleted agent '{agent['name']}'")
+            self._selected_agent_id = None
+            self._refresh_agents_tab()
 
     @work(thread=True)
-    def _do_sandbox_start(self, project_id):
-        """Start a sandbox for the selected project."""
+    def _do_run_agent(self):
+        """Run the selected agent via Claude CLI subprocess."""
+        if not self._selected_agent_id:
+            self.call_from_thread(self.notify, "Select an agent first", severity="warning")
+            return
+
+        if self._agent_running:
+            self.call_from_thread(self.notify, "Agent already running", severity="warning")
+            return
+
+        agent = get_agent(self._selected_agent_id)
+        if not agent:
+            self.call_from_thread(self.notify, "Agent not found", severity="error")
+            return
+
+        log = self.query_one("#agent-run-log", RichLog)
+        log.clear()
+        log.write(f"[bold blue]Running agent: {agent['name']} ({agent['model']})...[/bold blue]")
+        self._agent_running = True
+
+        run_id = create_agent_run(agent["id"], input_text=agent["system_prompt"])
+
+        # Build Claude CLI command
+        env = os.environ.copy()
+        for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+            env.pop(key, None)
+
+        model_flag = {
+            "sonnet": "sonnet",
+            "opus": "opus",
+            "haiku": "haiku",
+        }.get(agent["model"], "sonnet")
+
+        cmd = [
+            "claude", "-p",
+            "--output-format", "stream-json",
+            "--model", model_flag,
+            "--max-turns", str(agent["max_turns"] or 20),
+            "--append-system-prompt", agent["system_prompt"],
+        ]
+
+        # Set working directory to project path if bound
+        cwd = self._workbench_path
+        if agent.get("project_id"):
+            conn = get_db()
+            proj = conn.execute(
+                "SELECT path FROM projects WHERE id = ?", (agent["project_id"],)
+            ).fetchone()
+            conn.close()
+            if proj:
+                cwd = _to_native_path(proj["path"])
+
+        output_buffer = []
+        try:
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, env=env, cwd=cwd,
+            )
+
+            # Send a starter prompt
+            prompt = agent.get("description") or f"Execute your purpose as {agent['name']}"
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+
+            for raw_line in iter(proc.stdout.readline, ""):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    event_data = json.loads(raw_line)
+                    text = self._extract_text_from_event(event_data)
+                    if text:
+                        output_buffer.append(text)
+                        for line in text.split("\n"):
+                            if line.strip():
+                                log.write(line)
+                    if event_data.get("type") == "result":
+                        tokens = event_data.get("usage", {}).get("total_tokens", 0)
+                        cost = event_data.get("cost_usd")
+                        meta = []
+                        if tokens:
+                            meta.append(f"{tokens} tokens")
+                        if cost is not None:
+                            meta.append(f"${cost:.4f}")
+                        if meta:
+                            log.write(f"[dim]({', '.join(meta)})[/dim]")
+                        complete_agent_run(
+                            run_id, status="completed",
+                            output="\n".join(output_buffer),
+                            tokens_used=tokens,
+                        )
+                except json.JSONDecodeError:
+                    continue
+
+            proc.wait()
+            if proc.returncode != 0:
+                stderr = proc.stderr.read().strip()
+                if stderr:
+                    log.write(f"[red]{stderr}[/red]")
+                complete_agent_run(
+                    run_id, status="failed",
+                    output="\n".join(output_buffer),
+                    error=stderr,
+                )
+            else:
+                log.write(f"[bold green]Agent run complete[/bold green]")
+
+        except FileNotFoundError:
+            log.write("[red]Claude CLI not found. Is 'claude' on PATH?[/red]")
+            complete_agent_run(run_id, status="failed", error="Claude CLI not found")
+        except Exception as e:
+            log.write(f"[red]Error: {type(e).__name__}: {e}[/red]")
+            complete_agent_run(run_id, status="failed", error=str(e))
+        finally:
+            self._agent_running = False
+            self.call_from_thread(self._refresh_agents_tab)
+
+    def _do_new_pipeline(self):
+        """Create a new pipeline (placeholder — opens log with instructions)."""
+        log = self.query_one("#agent-run-log", RichLog)
+        log.clear()
+        log.write("[bold]Pipeline creation[/bold]")
+        log.write("")
+        log.write("Pipelines chain multiple agents together.")
+        log.write("To create a pipeline, first create agents, then define steps.")
+        log.write("")
+        log.write("[dim]Pipeline editor coming in a future update.[/dim]")
+        log.write("[dim]For now, use the DB directly or Claude CLI to create pipelines.[/dim]")
+        self.notify("Pipeline editor coming soon")
+
+    def _do_approve_reindex(self, request_id):
+        """Approve a reindex request and trigger indexing."""
+        req = approve_reindex(request_id)
+        if not req:
+            self.notify("Request not found", severity="error")
+            return
+
+        log = self.query_one("#agent-run-log", RichLog)
+        log.write(f"[bold green]Approved reindex for {req['project_name']}[/bold green]")
+        self.notify(f"Approved reindex for {req['project_name']}")
+        self._refresh_reindex_requests()
+
+        # Trigger indexing
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index_project.sh")
+        try:
+            subprocess.Popen(
+                ["bash", script, req["project_name"], req["project_path"]],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            log.write(f"[bold blue]Indexing started for {req['project_name']}[/bold blue]")
+        except Exception as e:
+            log.write(f"[red]Failed to start indexing: {e}[/red]")
+
+    def _do_deny_reindex(self, request_id):
+        """Deny a reindex request."""
+        deny_reindex(request_id)
+        self.notify("Reindex request denied")
+        self._refresh_reindex_requests()
+
+        log = self.query_one("#agent-run-log", RichLog)
+        log.write("[yellow]Reindex request denied[/yellow]")
+
+    # ── Alpha Builds Tab ─────────────────────────────────────────
+
+    def _refresh_builds_tab(self):
+        """Refresh the Alpha Builds tab — build cards."""
+        self._refresh_build_cards()
+
+    def _refresh_build_cards(self):
+        """Build cards inside #builds-left-panel."""
+        try:
+            panel = self.query_one("#builds-left-panel", VerticalScroll)
+        except Exception:
+            return
+
+        for child in list(panel.children):
+            child.remove()
+
+        self._build_card_gen += 1
+        gen = self._build_card_gen
+
+        builds = get_alpha_builds()
+        if not builds:
+            panel.mount(Static("[dim]No builds yet — select a project and Launch Build[/dim]"))
+            return
+
+        for b in builds:
+            status = b["status"]
+            name = b.get("project_name") or b.get("container_name") or "?"
+            container = (b.get("container_id") or "")[:12]
+            image = b.get("image") or ""
+
+            if status == "running":
+                status_line = f"[green]\u25cf {status}[/green]"
+                css_class = "build-card running"
+            elif status == "building":
+                status_line = f"[yellow]\u25cf {status}[/yellow]"
+                css_class = "build-card building"
+            elif status == "failed":
+                status_line = f"[red]\u25cf {status}[/red]"
+                css_class = "build-card failed"
+            else:
+                status_line = f"[dim]\u25cb {status}[/dim]"
+                css_class = "build-card stopped"
+
+            label = (
+                f"[bold]{name}[/bold]\n"
+                f"{image}\n"
+                f"{status_line}\n"
+                f"Container: {container or 'none'}"
+            )
+
+            btn = Button(label, id=f"btn-build-card-{gen}-{b['id']}", variant="default")
+            btn.add_class(*css_class.split())
+            panel.mount(btn)
+
+    def _show_build_info(self, build_id):
+        """Show build details in the right panel."""
+        conn = get_db()
+        build = conn.execute(
+            """SELECT ab.*, p.name as project_name
+               FROM alpha_builds ab
+               JOIN projects p ON p.id = ab.project_id
+               WHERE ab.id = ?""",
+            (build_id,),
+        ).fetchone()
+        conn.close()
+
+        if not build:
+            return
+
+        label = self.query_one("#build-info-label", Static)
+        parts = [
+            f"[bold]{build['project_name']}[/bold]",
+            f"Status: {build['status']}",
+            f"Image: {build['image'] or 'none'}",
+            f"Container: {(build['container_id'] or '')[:12] or 'none'}",
+            f"Command: {build['command'] or 'none'}",
+        ]
+        if build["ports"]:
+            parts.append(f"Ports: {build['ports']}")
+        label.update(" | ".join(parts))
+
+    @work(thread=True)
+    def _do_launch_build(self, project_id):
+        """Launch a Docker container for the selected project."""
         conn = get_db()
         proj = conn.execute(
-            "SELECT name, path FROM projects WHERE id = ?", (project_id,)
+            "SELECT name, path, stack FROM projects WHERE id = ?", (project_id,)
         ).fetchone()
         conn.close()
 
@@ -1865,210 +2803,378 @@ class CustodianAdmin(App):
 
         project_name = proj["name"]
         project_path = _to_native_path(proj["path"])
-        log = self.query_one("#sandbox-log", RichLog)
+        log = self.query_one("#builds-log", RichLog)
         log.clear()
-        log.write(f"[bold blue]Starting sandbox for {project_name}...[/bold blue]")
+        log.write(f"[bold blue]Launching build for {project_name}...[/bold blue]")
 
-        # Import detection logic inline (same as MCP server)
-        command, port, app_type = None, None, None
-        pkg = os.path.join(project_path, "package.json")
-        if os.path.isfile(pkg):
-            try:
-                with open(pkg) as f:
-                    data = json.load(f)
-                scripts = data.get("scripts", {})
-                if "dev" in scripts:
-                    command, port, app_type = "npm run dev", 3000, "web"
-                elif "start" in scripts:
-                    command, port, app_type = "npm start", 3000, "web"
-            except (json.JSONDecodeError, OSError):
-                pass
+        container_name = f"alpha-{project_name}"
 
-        if not command and os.path.isfile(os.path.join(project_path, "manage.py")):
-            command, port, app_type = "python manage.py runserver", 8000, "web"
-
-        if not command:
-            for entry in ("app.py", "main.py"):
-                fp = os.path.join(project_path, entry)
-                if os.path.isfile(fp):
-                    try:
-                        with open(fp) as f:
-                            content = f.read(2000)
-                        if any(kw in content for kw in ["textual", "curses", "blessed", "prompt_toolkit"]):
-                            command, port, app_type = f"python {entry}", None, "terminal"
-                        elif any(kw in content for kw in ["flask", "Flask", "fastapi", "FastAPI", "uvicorn"]):
-                            command, port, app_type = f"python {entry}", 5000, "web"
-                        else:
-                            command, port, app_type = f"python {entry}", 5000, "web"
-                    except OSError:
-                        command, port, app_type = f"python {entry}", 5000, "web"
-                    break
-
-        if not command:
-            log.write(f"[red]Could not auto-detect command for {project_name}[/red]")
-            self.call_from_thread(self.notify, "No dev command detected", severity="error")
+        # Check if container already exists
+        result = subprocess.run(
+            ["docker", "inspect", container_name],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            log.write(f"[yellow]Container {container_name} already exists — starting...[/yellow]")
+            subprocess.run(["docker", "start", container_name], capture_output=True)
+            # Get container ID
+            cid = subprocess.run(
+                ["docker", "inspect", "--format", "{{.Id}}", container_name],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            save_alpha_build(
+                project_id=project_id, container_id=cid[:12],
+                container_name=container_name, status="running",
+                image="(existing)",
+            )
+            log.write(f"[bold green]Container started: {container_name}[/bold green]")
+            self.call_from_thread(self._refresh_builds_tab)
+            self.call_from_thread(self.notify, f"Started {container_name}")
             return
 
-        log.write(f"Detected: {command} ({app_type})")
-
-        wsh_path = "/home/dev/.waveterm/bin/wsh"
-        wsh_ok = os.path.isfile(wsh_path) and os.environ.get("WAVETERM_BLOCKID")
-
-        try:
-            if app_type == "terminal":
-                session_name = f"sandbox-{project_name}"
-                subprocess.run(["tmux", "kill-session", "-t", session_name],
-                              capture_output=True)
-                subprocess.run(["tmux", "new-session", "-d", "-s", session_name,
-                               "-c", project_path, command], capture_output=True)
-                log.write(f"[green]Started tmux session: {session_name}[/green]")
-                pid = None
-            else:
-                session_name = None
-                proc = subprocess.Popen(
-                    command, shell=True, cwd=project_path,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # Check for devcontainer config
+        devcontainer_path = os.path.join(project_path, ".devcontainer")
+        if os.path.isdir(devcontainer_path):
+            dockerfile = os.path.join(devcontainer_path, "Dockerfile")
+            if os.path.isfile(dockerfile):
+                image_name = f"alpha-{project_name}:latest"
+                log.write(f"[bold blue]Building from devcontainer...[/bold blue]")
+                save_alpha_build(
+                    project_id=project_id, container_name=container_name,
+                    image=image_name, status="building",
                 )
-                pid = proc.pid
-                log.write(f"[green]Started PID {pid}[/green]")
+                self.call_from_thread(self._refresh_builds_tab)
 
-            # Open preview via wsh if available
-            if wsh_ok:
-                try:
-                    import time
-                    if app_type == "web" and port:
-                        time.sleep(2)
-                        subprocess.run([wsh_path, "web", "open", "-m", f"http://localhost:{port}"],
-                                      capture_output=True, timeout=5)
-                        log.write("[green]Browser preview opened[/green]")
-                    elif app_type == "terminal" and session_name:
-                        subprocess.run([wsh_path, "run", "-m", "--",
-                                       "tmux", "attach-session", "-t", session_name],
-                                      capture_output=True, timeout=5)
-                        log.write("[green]Terminal preview opened[/green]")
-                except Exception:
-                    log.write("[yellow]Preview failed — use Sandbox widget in sidebar[/yellow]")
+                build_result = subprocess.run(
+                    ["docker", "build", "-t", image_name,
+                     "-f", dockerfile, project_path],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if build_result.returncode != 0:
+                    log.write(f"[red]Build failed:[/red]")
+                    for line in build_result.stderr.strip().split("\n")[-10:]:
+                        log.write(f"  [red]{line}[/red]")
+                    save_alpha_build(
+                        project_id=project_id, container_name=container_name,
+                        image=image_name, status="failed",
+                        build_log=build_result.stderr[-2000:],
+                    )
+                    self.call_from_thread(self._refresh_builds_tab)
+                    return
+                log.write(f"[green]Built image: {image_name}[/green]")
             else:
-                if app_type == "web" and port:
-                    log.write(f"[yellow]Open http://localhost:{port}[/yellow]")
-                elif session_name:
-                    log.write(f"[yellow]Run: tmux attach -t {session_name}[/yellow]")
+                image_name = "python:3.12" if "Python" in (proj["stack"] or "") else "node:22"
+        else:
+            # Default image based on stack
+            stack = proj["stack"] or ""
+            if "Python" in stack:
+                image_name = "python:3.12"
+            elif "Node" in stack or "React" in stack or "Next" in stack:
+                image_name = "node:22"
+            else:
+                image_name = "python:3.12"
 
-            # Update DB
-            conn = get_db()
-            conn.execute("DELETE FROM sandbox_state WHERE project_id = ?", (project_id,))
-            conn.execute(
-                """INSERT INTO sandbox_state
-                   (project_id, command, pid, port, status, preview_type, tmux_session)
-                   VALUES (?, ?, ?, ?, 'running', ?, ?)""",
-                (project_id, command, pid, port, app_type, session_name),
+        log.write(f"Using image: {image_name}")
+
+        # Run container
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "run", "-d",
+                    "--name", container_name,
+                    "-v", f"{project_path}:/workspace",
+                    "-w", "/workspace",
+                    image_name, "sleep", "infinity",
+                ],
+                capture_output=True, text=True, timeout=60,
             )
-            conn.commit()
-            conn.close()
+            if result.returncode != 0:
+                log.write(f"[red]Failed to start container:[/red]")
+                log.write(f"  [red]{result.stderr.strip()}[/red]")
+                save_alpha_build(
+                    project_id=project_id, container_name=container_name,
+                    image=image_name, status="failed",
+                    build_log=result.stderr,
+                )
+                self.call_from_thread(self._refresh_builds_tab)
+                return
 
-            log.write(f"[bold green]Sandbox running for {project_name}[/bold green]")
-            self.call_from_thread(self._refresh_status_tab)
-            self.call_from_thread(self.notify, f"Sandbox started for {project_name}")
+            container_id = result.stdout.strip()[:12]
+            log.write(f"[green]Container started: {container_id}[/green]")
 
+            save_alpha_build(
+                project_id=project_id, container_id=container_id,
+                container_name=container_name, image=image_name,
+                status="running",
+            )
+
+            log.write(f"[bold green]Alpha build running: {container_name}[/bold green]")
+            log.write(f"[dim]Shell in: docker exec -it {container_name} bash[/dim]")
+            self.call_from_thread(self._refresh_builds_tab)
+            self.call_from_thread(self.notify, f"Build launched: {container_name}")
+
+        except subprocess.TimeoutExpired:
+            log.write("[red]Container start timed out (60s)[/red]")
+            self.call_from_thread(self.notify, "Container start timed out", severity="error")
         except Exception as e:
-            log.write(f"[bold red]Failed: {e}[/bold red]")
-            self.call_from_thread(self.notify, f"Sandbox failed: {e}", severity="error")
+            log.write(f"[red]Error: {e}[/red]")
+            self.call_from_thread(self.notify, f"Build error: {e}", severity="error")
 
     @work(thread=True)
-    def _do_sandbox_stop(self):
-        """Stop the running sandbox."""
-        log = self.query_one("#sandbox-log", RichLog)
-        log.write("[bold yellow]Stopping sandbox...[/bold yellow]")
-
-        conn = get_db()
-        sandbox = conn.execute(
-            """SELECT ss.*, p.name as project_name
-               FROM sandbox_state ss
-               JOIN projects p ON p.id = ss.project_id
-               WHERE ss.status = 'running'
-               ORDER BY ss.id DESC LIMIT 1"""
-        ).fetchone()
-
-        if not sandbox:
-            log.write("[red]No sandbox is running[/red]")
-            self.call_from_thread(self.notify, "No sandbox running", severity="warning")
-            conn.close()
+    def _do_stop_build(self):
+        """Stop the selected alpha build container."""
+        if not self._selected_build_id:
+            self.call_from_thread(self.notify, "Select a build first", severity="warning")
             return
 
-        project_name = sandbox["project_name"]
+        conn = get_db()
+        build = conn.execute(
+            """SELECT ab.*, p.name as project_name
+               FROM alpha_builds ab
+               JOIN projects p ON p.id = ab.project_id
+               WHERE ab.id = ?""",
+            (self._selected_build_id,),
+        ).fetchone()
 
-        # Kill tmux session if terminal app
-        tmux_session = sandbox.get("tmux_session") if "tmux_session" in sandbox.keys() else None
-        if tmux_session:
-            subprocess.run(["tmux", "kill-session", "-t", tmux_session],
-                          capture_output=True, timeout=5)
-            log.write(f"Killed tmux session: {tmux_session}")
+        if not build:
+            conn.close()
+            self.call_from_thread(self.notify, "Build not found", severity="error")
+            return
 
-        # Kill process if web app
-        pid = sandbox["pid"]
-        if pid:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                log.write(f"Terminated PID {pid}")
-            except (ProcessLookupError, PermissionError):
-                log.write(f"[yellow]PID {pid} already gone[/yellow]")
+        log = self.query_one("#builds-log", RichLog)
+        container_name = build["container_name"]
+        log.write(f"[bold yellow]Stopping {container_name}...[/bold yellow]")
 
-        conn.execute(
-            "UPDATE sandbox_state SET status = 'stopped', pid = NULL, tmux_session = NULL WHERE id = ?",
-            (sandbox["id"],),
+        result = subprocess.run(
+            ["docker", "stop", container_name],
+            capture_output=True, text=True, timeout=30,
         )
+        if result.returncode == 0:
+            conn.execute(
+                "UPDATE alpha_builds SET status='stopped', stopped_at=datetime('now') WHERE id=?",
+                (self._selected_build_id,),
+            )
+            conn.commit()
+            log.write(f"[bold green]Stopped {container_name}[/bold green]")
+        else:
+            log.write(f"[red]Stop failed: {result.stderr.strip()}[/red]")
+
+        conn.close()
+        self.call_from_thread(self._refresh_builds_tab)
+
+    @work(thread=True)
+    def _do_rebuild(self):
+        """Stop, remove, and relaunch the selected build."""
+        if not self._selected_build_id:
+            self.call_from_thread(self.notify, "Select a build first", severity="warning")
+            return
+
+        conn = get_db()
+        build = conn.execute(
+            "SELECT * FROM alpha_builds WHERE id = ?", (self._selected_build_id,)
+        ).fetchone()
+        conn.close()
+
+        if not build:
+            self.call_from_thread(self.notify, "Build not found", severity="error")
+            return
+
+        log = self.query_one("#builds-log", RichLog)
+        container_name = build["container_name"]
+
+        log.write(f"[bold yellow]Rebuilding {container_name}...[/bold yellow]")
+
+        # Stop and remove
+        subprocess.run(["docker", "stop", container_name], capture_output=True, timeout=30)
+        subprocess.run(["docker", "rm", container_name], capture_output=True, timeout=10)
+
+        # Remove old DB entry
+        conn = get_db()
+        conn.execute("DELETE FROM alpha_builds WHERE id = ?", (self._selected_build_id,))
         conn.commit()
         conn.close()
 
-        log.write(f"[bold green]Stopped sandbox for {project_name}[/bold green]")
-        self.call_from_thread(self._refresh_status_tab)
-        self.call_from_thread(self.notify, f"Sandbox stopped for {project_name}")
+        # Relaunch
+        self._selected_build_id = None
+        self.call_from_thread(self._do_launch_build, build["project_id"])
 
-    def _do_sandbox_open_preview(self):
-        """Open a preview block for the running sandbox."""
+    def _do_shell_build(self):
+        """Open an interactive shell into the selected build container."""
+        if not self._selected_build_id:
+            self.notify("Select a build first", severity="warning")
+            return
+
         conn = get_db()
-        sandbox = conn.execute(
-            """SELECT ss.*, p.name as project_name
-               FROM sandbox_state ss
-               JOIN projects p ON p.id = ss.project_id
-               WHERE ss.status = 'running'
-               ORDER BY ss.id DESC LIMIT 1"""
+        build = conn.execute(
+            "SELECT container_name FROM alpha_builds WHERE id = ?",
+            (self._selected_build_id,),
         ).fetchone()
         conn.close()
 
-        if not sandbox:
-            self.notify("No sandbox running", severity="warning")
+        if not build:
+            self.notify("Build not found", severity="error")
             return
 
-        wsh_path = "/home/dev/.waveterm/bin/wsh"
-        wsh_ok = os.path.isfile(wsh_path) and os.environ.get("WAVETERM_BLOCKID")
-        preview_type = sandbox.get("preview_type") if "preview_type" in sandbox.keys() else None
-        port = sandbox["port"]
-        tmux = sandbox.get("tmux_session") if "tmux_session" in sandbox.keys() else None
+        container_name = build["container_name"]
+        session_name = f"shell-{container_name}"
 
-        if not wsh_ok:
-            if port:
-                self.notify(f"Open http://localhost:{port} in browser")
-            elif tmux:
-                self.notify(f"Run: tmux attach -t {tmux}")
-            else:
-                self.notify("No preview available", severity="warning")
+        # Open in a tmux session
+        subprocess.run(["tmux", "kill-session", "-t", session_name],
+                       capture_output=True)
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session_name,
+             "docker", "exec", "-it", container_name, "bash"],
+            capture_output=True,
+        )
+        self.notify(f"Shell opened: tmux attach -t {session_name}")
+
+        log = self.query_one("#builds-log", RichLog)
+        log.write(f"[green]Shell session: {session_name}[/green]")
+        log.write(f"[dim]Run: tmux attach -t {session_name}[/dim]")
+
+    @work(thread=True)
+    def _do_build_test(self):
+        """Run tests inside the selected build container."""
+        if not self._selected_build_id:
+            self.call_from_thread(self.notify, "Select a build first", severity="warning")
             return
+
+        conn = get_db()
+        build = conn.execute(
+            """SELECT ab.*, p.name as project_name, p.path as project_path, p.stack
+               FROM alpha_builds ab
+               JOIN projects p ON p.id = ab.project_id
+               WHERE ab.id = ?""",
+            (self._selected_build_id,),
+        ).fetchone()
+        conn.close()
+
+        if not build or build["status"] != "running":
+            self.call_from_thread(self.notify, "Build must be running to test", severity="warning")
+            return
+
+        log = self.query_one("#builds-log", RichLog)
+        container = build["container_name"]
+        stack = build["stack"] or ""
+
+        # Auto-detect test command
+        if "Python" in stack:
+            test_cmd = "pytest -v"
+        elif any(s in stack for s in ("Node", "React", "Next", "Electron")):
+            test_cmd = "npm test"
+        else:
+            test_cmd = "pytest -v"
+
+        log.write(f"[bold blue]Running tests: {test_cmd}[/bold blue]")
 
         try:
-            if preview_type == "web" and port:
-                subprocess.run([wsh_path, "web", "open", "-m", f"http://localhost:{port}"],
-                              capture_output=True, timeout=5)
-                self.notify(f"Browser preview opened for {sandbox['project_name']}")
-            elif preview_type == "terminal" and tmux:
-                subprocess.run([wsh_path, "run", "-m", "--",
-                               "tmux", "attach-session", "-t", tmux],
-                              capture_output=True, timeout=5)
-                self.notify(f"Terminal preview opened for {sandbox['project_name']}")
+            result = subprocess.run(
+                ["docker", "exec", container, "bash", "-c", test_cmd],
+                capture_output=True, text=True, timeout=120,
+            )
+            for line in result.stdout.strip().split("\n"):
+                if line.strip():
+                    log.write(line)
+            if result.stderr.strip():
+                for line in result.stderr.strip().split("\n")[-10:]:
+                    log.write(f"[red]{line}[/red]")
+            if result.returncode == 0:
+                log.write("[bold green]Tests passed[/bold green]")
             else:
-                self.notify("No preview available", severity="warning")
+                log.write(f"[bold red]Tests failed (exit {result.returncode})[/bold red]")
+        except subprocess.TimeoutExpired:
+            log.write("[red]Tests timed out (120s)[/red]")
         except Exception as e:
-            self.notify(f"Preview failed: {e}", severity="error")
+            log.write(f"[red]Error: {e}[/red]")
+
+    @work(thread=True)
+    def _do_build_install(self):
+        """Install dependencies inside the selected build container."""
+        if not self._selected_build_id:
+            self.call_from_thread(self.notify, "Select a build first", severity="warning")
+            return
+
+        conn = get_db()
+        build = conn.execute(
+            """SELECT ab.*, p.name as project_name, p.stack
+               FROM alpha_builds ab
+               JOIN projects p ON p.id = ab.project_id
+               WHERE ab.id = ?""",
+            (self._selected_build_id,),
+        ).fetchone()
+        conn.close()
+
+        if not build or build["status"] != "running":
+            self.call_from_thread(self.notify, "Build must be running to install", severity="warning")
+            return
+
+        log = self.query_one("#builds-log", RichLog)
+        container = build["container_name"]
+        stack = build["stack"] or ""
+
+        # Auto-detect install command
+        if "Python" in stack:
+            install_cmd = "pip install -r requirements.txt"
+        elif any(s in stack for s in ("Node", "React", "Next", "Electron")):
+            install_cmd = "npm install"
+        else:
+            install_cmd = "pip install -r requirements.txt"
+
+        log.write(f"[bold blue]Installing deps: {install_cmd}[/bold blue]")
+
+        try:
+            result = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container, "bash", "-c", install_cmd],
+                capture_output=True, text=True, timeout=180,
+            )
+            for line in result.stdout.strip().split("\n")[-15:]:
+                if line.strip():
+                    log.write(line)
+            if result.returncode == 0:
+                log.write("[bold green]Dependencies installed[/bold green]")
+            else:
+                log.write(f"[red]Install failed: {result.stderr.strip()[-200:]}[/red]")
+        except subprocess.TimeoutExpired:
+            log.write("[red]Install timed out (180s)[/red]")
+        except Exception as e:
+            log.write(f"[red]Error: {e}[/red]")
+
+    @work(thread=True)
+    def _do_build_logs(self):
+        """Stream recent Docker logs for the selected build."""
+        if not self._selected_build_id:
+            self.call_from_thread(self.notify, "Select a build first", severity="warning")
+            return
+
+        conn = get_db()
+        build = conn.execute(
+            "SELECT container_name FROM alpha_builds WHERE id = ?",
+            (self._selected_build_id,),
+        ).fetchone()
+        conn.close()
+
+        if not build:
+            self.call_from_thread(self.notify, "Build not found", severity="error")
+            return
+
+        log = self.query_one("#builds-log", RichLog)
+        log.clear()
+        container = build["container_name"]
+        log.write(f"[bold blue]Logs for {container}:[/bold blue]")
+
+        try:
+            result = subprocess.run(
+                ["docker", "logs", "--tail", "50", container],
+                capture_output=True, text=True, timeout=10,
+            )
+            output = result.stdout + result.stderr
+            if output.strip():
+                for line in output.strip().split("\n"):
+                    log.write(line)
+            else:
+                log.write("[dim]No logs yet[/dim]")
+        except Exception as e:
+            log.write(f"[red]Error reading logs: {e}[/red]")
 
     # ── Editor Tab ──────────────────────────────────────────────────
 
@@ -2775,6 +3881,142 @@ class CustodianAdmin(App):
         else:
             self.notify("Nothing running", severity="warning")
 
+    # ── Devices Tab ──────────────────────────────────────────────────
+
+    def _refresh_devices_tab(self):
+        """Refresh the Devices tab — populate DataTable."""
+        try:
+            table = self.query_one("#devices-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("ID", "Name", "Hostname", "Tailscale IP", "Fingerprint", "Paired", "Status")
+            table.cursor_type = "row"
+
+            conn = get_db()
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS devices "
+                "(id INTEGER PRIMARY KEY, name TEXT NOT NULL, hostname TEXT, "
+                "tailscale_ip TEXT, ssh_pubkey TEXT, ssh_fingerprint TEXT, "
+                "paired_at TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT, "
+                "status TEXT DEFAULT 'paired')"
+            )
+            rows = conn.execute(
+                "SELECT id, name, hostname, tailscale_ip, ssh_fingerprint, paired_at, status "
+                "FROM devices ORDER BY paired_at DESC"
+            ).fetchall()
+            conn.close()
+
+            for r in rows:
+                fp = (r["ssh_fingerprint"] or "")[:20]
+                paired = (r["paired_at"] or "")[:16]
+                status = r["status"] or "paired"
+                table.add_row(
+                    str(r["id"]),
+                    r["name"] or "",
+                    r["hostname"] or "",
+                    r["tailscale_ip"] or "",
+                    fp + "..." if len(r["ssh_fingerprint"] or "") > 20 else fp,
+                    paired,
+                    status,
+                )
+        except Exception:
+            pass
+
+    def _do_generate_pair_code(self):
+        """Generate a new pairing code and display it."""
+        try:
+            conn = get_db()
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS pairing_codes "
+                "(id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, "
+                "created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, "
+                "used_by_device_id INTEGER, status TEXT DEFAULT 'pending')"
+            )
+            # Expire old codes
+            conn.execute(
+                "UPDATE pairing_codes SET status = 'expired' "
+                "WHERE status = 'pending' AND expires_at < datetime('now')"
+            )
+            # Generate code
+            import secrets as _secrets
+            import string as _string
+            chars = _string.ascii_uppercase + _string.digits
+            chars = chars.replace("O", "").replace("0", "").replace("I", "").replace("1", "").replace("L", "")
+            suffix = "".join(_secrets.choice(chars) for _ in range(4))
+            code = f"NAI-{suffix}"
+            from datetime import datetime as _dt, timedelta as _td
+            expires = (_dt.utcnow() + _td(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "INSERT INTO pairing_codes (code, expires_at) VALUES (?, ?)",
+                (code, expires),
+            )
+            conn.commit()
+            conn.close()
+
+            display = self.query_one("#pairing-code-display", Static)
+            display.update(
+                f"[bold green]Pairing Code: [white on blue] {code} [/white on blue][/bold green]\n"
+                f"[dim]Expires in 10 minutes. On the new device, run:[/dim]\n"
+                f"[bold]curl -sL http://PC_IP:7777/setup | bash[/bold]\n"
+                f"[dim]or: bash bin/setup-device[/dim]"
+            )
+            log = self.query_one("#devices-log", RichLog)
+            log.write(f"[green]Generated pairing code:[/green] {code} (expires {expires})")
+            self.notify(f"Pairing code: {code}", severity="information")
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
+    def _do_remove_device(self):
+        """Remove/revoke selected device and its SSH key."""
+        table = self.query_one("#devices-table", DataTable)
+        row_idx = table.cursor_row
+        if row_idx is None:
+            self.notify("Select a device first", severity="warning")
+            return
+        try:
+            row_data = table.get_row_at(row_idx)
+            device_id = int(row_data[0])
+        except Exception:
+            self.notify("Select a device first", severity="warning")
+            return
+
+        try:
+            conn = get_db()
+            device = conn.execute(
+                "SELECT * FROM devices WHERE id = ?", (device_id,)
+            ).fetchone()
+            if not device:
+                conn.close()
+                self.notify("Device not found", severity="error")
+                return
+
+            # Mark as revoked
+            conn.execute(
+                "UPDATE devices SET status = 'revoked' WHERE id = ?", (device_id,)
+            )
+            conn.commit()
+            conn.close()
+
+            # Remove pubkey from authorized_keys
+            pubkey = device["ssh_pubkey"]
+            ak_path = os.path.expanduser("~/.ssh/authorized_keys")
+            if pubkey and os.path.isfile(ak_path):
+                with open(ak_path, "r") as f:
+                    lines = f.readlines()
+                # Filter out lines containing this key (match the key portion)
+                key_parts = pubkey.strip().split()
+                key_data = key_parts[1] if len(key_parts) > 1 else pubkey.strip()
+                new_lines = [l for l in lines if key_data not in l]
+                if len(new_lines) != len(lines):
+                    with open(ak_path, "w") as f:
+                        f.writelines(new_lines)
+
+            log = self.query_one("#devices-log", RichLog)
+            log.write(f"[red]Revoked device:[/red] {device['name']} (SSH key removed)")
+            self.notify(f"Device '{device['name']}' revoked")
+            self._refresh_devices_tab()
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
     # ── Actions ───────────────────────────────────────────────────────
 
     def action_refresh(self) -> None:
@@ -2785,6 +4027,9 @@ class CustodianAdmin(App):
         self._refresh_fossils_tab()
         self._refresh_detective_tab()
         self._refresh_status_tab()
+        self._refresh_agents_tab()
+        self._refresh_builds_tab()
+        self._refresh_devices_tab()
         self.notify("Refreshed")
 
     def action_focus_tab(self, tab_name: str) -> None:

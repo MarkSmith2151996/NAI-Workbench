@@ -138,4 +138,8 @@ echo "Launching Claude in $PROJECT_DIR..."
 echo ""
 
 cd "$PROJECT_DIR"
+
+# Start status ticker in terminal title bar
+source "$(dirname "$0")/status-ticker"
+
 exec claude

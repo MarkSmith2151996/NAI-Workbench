@@ -1,6 +1,8 @@
 FROM node:22-bookworm
 
-RUN apt-get update && apt-get install -y --no-install-recommends     curl git jq fzf ripgrep fd-find     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends     curl git jq fzf ripgrep fd-find     && rm -rf /var/lib/apt/lists/* \
+    && curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
+       -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd
 
 RUN npm install -g @anthropic-ai/claude-code
 

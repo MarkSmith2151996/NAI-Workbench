@@ -126,8 +126,50 @@ The Custodian MCP server (`custodian/mcp_server.py`) exposes these tools:
 - `list_projects`, `get_project_fossil`, `lookup_symbol`, `get_symbol_context`
 - `find_related_files`, `get_recent_changes`, `get_detective_insights`, `trigger_custodian`
 - `request_reindex` — Create a pending reindex request (user must approve in Admin TUI)
-- `sandbox_start/stop/restart/status/logs/test/install` — Sandbox management
+- `sandbox_start/stop/restart/status/logs/test/install/exec` — Sandbox management
 - `penpot_list_projects/get_page/export_svg` — Penpot design integration
+- `laptop_read/write/edit_file`, `laptop_run_command`, `laptop_glob`, `laptop_grep`, `laptop_list_dir`, `laptop_system_info`, `laptop_download_file` — Remote laptop access over Tailscale
+- `agent_list/create/update/delete/run/runs` — Agent Factory (see below)
+
+### Agent Factory (MCP Tools)
+The Agent Factory lets you create, manage, and run persistent AI agents stored in the shared Workbench database. Agents created from any Claude session are visible in the Admin TUI and other sessions.
+
+**Tools:**
+- `agent_list(status?)` — List all agents (default: active). Shows name, model, project, run count, last run.
+- `agent_create(name, system_prompt, description?, model?, project?, max_turns?)` — Create a new agent. Model: `sonnet` (default), `opus`, or `haiku`. Project binds the agent to a registered project's working directory.
+- `agent_update(agent, name?, system_prompt?, description?, model?, project?, max_turns?)` — Update an agent by name or ID. Pass only the fields you want to change.
+- `agent_delete(agent)` — Soft-delete an agent by name or ID.
+- `agent_run(agent, prompt?)` — Run an agent via Claude CLI subprocess. Returns full output, token usage, and cost. Pass `prompt` to override the default starter prompt.
+- `agent_runs(agent?, limit?)` — View run history. Filter by agent name/ID or see all runs.
+
+**When to use agents:**
+- Repeatable tasks you want to run the same way every time (code review, test generation, data analysis)
+- Specialized roles with custom system prompts (scraper, analyzer, writer, reviewer)
+- Multi-step workflows where agents handle different stages
+- Any task where you want to track execution history, token usage, and cost
+
+**Example — creating a project-specific agent:**
+```
+agent_create(
+  name="fba-scraper",
+  system_prompt="You are a Playwright automation expert for Amazon FBA. Write clean, robust Playwright scripts. Always include error handling and retry logic. Output only code unless asked for explanation.",
+  description="Writes Playwright scripts for Amazon scraping",
+  model="sonnet",
+  project="fba-command-center",
+  max_turns=15
+)
+```
+
+**Example — running an agent with a task:**
+```
+agent_run(agent="fba-scraper", prompt="Write a Playwright script that searches Amazon for 'silicone spatula set', extracts the top 10 results with ASIN, price, BSR, and review count, and saves to CSV.")
+```
+
+**Notes:**
+- Agents run as `claude -p` subprocesses with `--append-system-prompt`
+- Runs are tracked in `agent_runs` table with `triggered_by='mcp'`
+- The Admin TUI Agent Factory tab shows the same agents and run history
+- Each run records: status, output, tokens used, errors, start/finish time
 
 ## How It Works
 Wave Terminal is the primary interface. The TUI dashboard (`dashboard/dashboard.py`) runs in a Wave terminal pane showing service health, Docker containers, tmux sessions, projects, and system metrics with real-time auto-refresh. Claude CLI runs in a separate Wave pane with full MCP tool access. Penpot and Komodo load as Wave web widget panes. Wave config files in `config/wave/` define sidebar widget buttons for quick access.
