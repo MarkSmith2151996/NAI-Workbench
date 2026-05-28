@@ -18,11 +18,13 @@ from pydantic import BaseModel
 
 from custodian.agents.prompt_compiler import compile_prompt
 from custodian.agents.schema import AgentSpec, GenericStructuredResult, LlmAgentSpec, ServiceAgentSpec, get_schema
-from custodian.services.opencode import run_opencode
 from custodian.services.tool_router import resolve_agent_tools, route_tool_call
 
 
 MAX_TOOL_ITERATIONS = int(os.environ.get("CUSTODIAN_AGENT_MAX_TOOL_ITERATIONS", "10"))
+DEFAULT_CHAT_COMPLETIONS_BASE_URL = os.environ.get(
+    "CUSTODIAN_LLM_PROXY_BASE_URL", "http://127.0.0.1:4096/v1"
+)
 DEFAULT_TOOL_SERVER_PORT = 9100
 PROJECTS_ROOT = Path(__file__).resolve().parents[2]
 CUSTODIAN_DB_PATH = PROJECTS_ROOT / "custodian" / "custodian.db"
@@ -66,9 +68,14 @@ async def execute_llm_agent(spec: LlmAgentSpec, input_payload: dict[str, Any], m
         {"role": "system", "content": compiled["system"]},
         {"role": "user", "content": compiled["user"]},
     ]
+    base_url = _llm_base_url(spec)
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        response_text = await _call_llm(model, messages, spec)
+        response_text, usage = await _call_llm(model, messages, base_url)
+        total_input_tokens += int(usage.get("prompt_tokens") or 0)
+        total_output_tokens += int(usage.get("completion_tokens") or 0)
         parsed = _parse_response(response_text)
         if parsed["type"] == "tool_call":
             tool_result = await _execute_tool(spec.project, parsed["name"], parsed["params"], tool_defs)
@@ -78,7 +85,13 @@ async def execute_llm_agent(spec: LlmAgentSpec, input_payload: dict[str, Any], m
         if parsed["type"] == "final_answer":
             output_schema = compiled["output_schema"]
             validated = output_schema.model_validate(parsed["data"])
-            return AgentInvocationResult(output=validated.model_dump())
+            total_tokens = total_input_tokens + total_output_tokens
+            return AgentInvocationResult(
+                output=validated.model_dump(),
+                tokens_input=total_input_tokens,
+                tokens_output=total_output_tokens,
+                cost_usd=None if total_tokens == 0 else None,
+            )
         messages.append({"role": "assistant", "content": response_text})
         messages.append({"role": "user", "content": f"Your response was not valid JSON in the required format. Parse error: {parsed['error']}"})
 
@@ -120,18 +133,62 @@ async def _fetch_box_tools(project: str, allowlist: list[str]) -> list[dict[str,
     return allowlisted
 
 
-async def _call_llm(model: str, messages: list[dict[str, str]], spec: LlmAgentSpec) -> str:
-    prompt = "\n\n".join(message["content"] for message in messages if message.get("content"))
-    result = await asyncio.to_thread(
-        run_opencode,
-        prompt=prompt,
-        model=model,
-        system_prompt=messages[0]["content"],
-        project_dir=PROJECTS_ROOT,
-        max_turns=1,
-        timeout=600,
+def _llm_base_url(spec: LlmAgentSpec) -> str:
+    runtime_base_url = spec.runtime.base_url if spec.runtime else None
+    return (runtime_base_url or DEFAULT_CHAT_COMPLETIONS_BASE_URL).rstrip("/")
+
+
+async def _call_llm(model: str, messages: list[dict[str, str]], base_url: str) -> tuple[str, dict[str, Any]]:
+    body = json.dumps(
+        {
+            "model": _chat_model_name(model),
+            "messages": messages,
+            "max_tokens": 4096,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    return result.text
+
+    try:
+        response_body = await asyncio.to_thread(_read_http_response, request)
+    except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
+        raise RuntimeError(f"LLM request failed: {exc}") from exc
+
+    try:
+        decoded = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("LLM proxy returned invalid JSON") from exc
+
+    try:
+        content = decoded["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("LLM proxy response did not include choices[0].message.content") from exc
+
+    if isinstance(content, list):
+        parts = [part.get("text", "") for part in content if isinstance(part, dict)]
+        content = "".join(parts)
+    if not isinstance(content, str):
+        raise RuntimeError("LLM proxy returned non-string message content")
+
+    usage = decoded.get("usage") if isinstance(decoded.get("usage"), dict) else {}
+    return content, usage
+
+
+def _read_http_response(request: urllib.request.Request) -> str:
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read().decode("utf-8")
+
+
+def _chat_model_name(model: str) -> str:
+    if "/" in model:
+        return model.split("/", 1)[1]
+    if ":" in model:
+        return model.split(":", 1)[1]
+    return model
 
 
 def _parse_response(text: str) -> dict[str, Any]:
