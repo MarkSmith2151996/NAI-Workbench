@@ -68,12 +68,13 @@ async def execute_llm_agent(spec: LlmAgentSpec, input_payload: dict[str, Any], m
         {"role": "system", "content": compiled["system"]},
         {"role": "user", "content": compiled["user"]},
     ]
+    provider = spec.runtime.provider if spec.runtime else "openai-proxy"
     base_url = _llm_base_url(spec)
     total_input_tokens = 0
     total_output_tokens = 0
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        response_text, usage = await _call_llm(model, messages, base_url)
+        response_text, usage = await _call_llm(model, messages, base_url, provider)
         total_input_tokens += int(usage.get("prompt_tokens") or 0)
         total_output_tokens += int(usage.get("completion_tokens") or 0)
         parsed = _parse_response(response_text)
@@ -135,13 +136,22 @@ async def _fetch_box_tools(project: str, allowlist: list[str]) -> list[dict[str,
 
 def _llm_base_url(spec: LlmAgentSpec) -> str:
     runtime_base_url = spec.runtime.base_url if spec.runtime else None
-    return (runtime_base_url or DEFAULT_CHAT_COMPLETIONS_BASE_URL).rstrip("/")
+    provider = spec.runtime.provider if spec.runtime else "openai-proxy"
+    base = (runtime_base_url or DEFAULT_CHAT_COMPLETIONS_BASE_URL).rstrip("/")
+    if provider == "ollama" and not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return base
 
 
-async def _call_llm(model: str, messages: list[dict[str, str]], base_url: str) -> tuple[str, dict[str, Any]]:
+async def _call_llm(
+    model: str,
+    messages: list[dict[str, str]],
+    base_url: str,
+    provider: str = "openai-proxy",
+) -> tuple[str, dict[str, Any]]:
     body = json.dumps(
         {
-            "model": _chat_model_name(model),
+            "model": _chat_model_name(model, provider),
             "messages": messages,
             "max_tokens": 4096,
         }
@@ -183,7 +193,9 @@ def _read_http_response(request: urllib.request.Request) -> str:
         return response.read().decode("utf-8")
 
 
-def _chat_model_name(model: str) -> str:
+def _chat_model_name(model: str, provider: str) -> str:
+    if provider == "ollama":
+        return model
     if "/" in model:
         return model.split("/", 1)[1]
     if ":" in model:
