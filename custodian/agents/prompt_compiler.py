@@ -22,9 +22,19 @@ def _format_task(task: str, input_payload: dict[str, Any]) -> str:
     return task.format(**input_payload)
 
 
-def _format_input_schema(input_schema: dict[str, Any]) -> str:
+def _format_input_schema(input_schema: dict[str, Any] | str | None) -> str:
+    if input_schema is None:
+        return "No parameters"
+    if isinstance(input_schema, str):
+        try:
+            input_schema = json.loads(input_schema)
+        except (json.JSONDecodeError, TypeError):
+            return str(input_schema)
+    if not isinstance(input_schema, dict):
+        return str(input_schema)
+
     compact = {}
-    for name, schema in (input_schema or {}).items():
+    for name, schema in input_schema.items():
         if not isinstance(schema, dict):
             compact[name] = "unknown"
             continue
