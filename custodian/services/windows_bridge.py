@@ -160,6 +160,8 @@ def edit_file(
 def run_command(
     command: str, cwd: str | None = None, timeout: int = 120
 ) -> object:
+    import base64
+
     win_cwd = cwd or _WIN_HOME
     wsl_cwd = _win_to_wsl(win_cwd)
     timeout = min(timeout, 600)
@@ -167,15 +169,22 @@ def run_command(
     dangerous = [
         "rm -rf /", "mkfs", "dd if=", "> /dev/sd",
         "format c:", "del /s /q c:\\", "rd /s /q c:\\",
+        "remove-item -recurse -force c:\\",
+        "remove-item c:\\ -recurse",
+        "get-childitem c:\\ -recurse | remove-item",
     ]
     lowered = command.lower()
     for blocked in dangerous:
         if blocked in lowered:
             return {"error": f"Blocked potentially destructive command: {command}"}
 
+    escaped_cwd = win_cwd.replace("'", "''")
+    full_command = f"Set-Location -LiteralPath '{escaped_cwd}'; {command}"
+    encoded = base64.b64encode(full_command.encode("utf-16-le")).decode("ascii")
+
     try:
         result = subprocess.run(
-            ["cmd.exe", "/c", command],
+            ["powershell.exe", "-NoProfile", "-EncodedCommand", encoded],
             cwd=wsl_cwd if os.path.isdir(wsl_cwd) else _WSL_HOME,
             capture_output=True,
             text=True,
@@ -201,8 +210,9 @@ def run_command(
     except FileNotFoundError:
         return {
             "error": (
-                "cmd.exe not found - WSL interop may be disabled. "
-                "Check /etc/wsl.conf [interop] enabled=true"
+                "powershell.exe not found — WSL interop may be disabled. "
+                "Check /etc/wsl.conf [interop] enabled=true and verify "
+                "PATH includes /mnt/c/Windows/System32/WindowsPowerShell/v1.0"
             )
         }
     except Exception as exc:
