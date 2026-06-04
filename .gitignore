@@ -1,6 +1,7 @@
 # Secrets
 config/penpot/compose.env
 config/komodo/compose.env
+.claude/mcp.json
 
 # Database
 custodian/custodian.db

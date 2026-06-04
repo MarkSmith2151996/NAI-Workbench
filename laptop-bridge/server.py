@@ -6,11 +6,12 @@ Claude Code running on the PC can operate on laptop files remotely via
 Tailscale.
 
 Transport: HTTP + SSE (MCP Streamable HTTP transport)
-Bind: Tailscale interface only (100.79.63.10:8222)
+Bind: Mac bridge target (100.82.234.100:8222) or BRIDGE_HOST override
 Auth: Bearer token via BRIDGE_TOKEN env var
 """
 
 import fnmatch
+import hmac
 import json
 import os
 import platform
@@ -26,7 +27,7 @@ from mcp.types import TextContent, Tool
 
 # --- Configuration ---
 
-LISTEN_HOST = os.environ.get("BRIDGE_HOST", "100.79.63.10")
+LISTEN_HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("BRIDGE_PORT", "8222"))
 BRIDGE_TOKEN = os.environ.get("BRIDGE_TOKEN", "")
 
@@ -441,14 +442,31 @@ async def handle_list_dir(args):
 
 
 async def handle_system_info(args):
+    system_name = platform.system()
     info = {
         "hostname": platform.node(),
-        "os": f"{platform.system()} {platform.release()}",
+        "os": f"{system_name} {platform.release()}",
         "arch": platform.machine(),
         "python": platform.python_version(),
         "user": os.environ.get("USER", "unknown"),
         "home": str(Path.home()),
     }
+
+    if system_name == "Darwin":
+        try:
+            product = subprocess.run(
+                ["sw_vers", "-productName"], capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+            version = subprocess.run(
+                ["sw_vers", "-productVersion"], capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+            build = subprocess.run(
+                ["sw_vers", "-buildVersion"], capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+            if product and version:
+                info["os"] = f"{product} {version} ({build})" if build else f"{product} {version}"
+        except Exception:
+            pass
 
     # Disk usage
     try:
@@ -461,19 +479,33 @@ async def handle_system_info(args):
     except Exception:
         pass
 
-    # Memory (Linux)
-    try:
-        with open("/proc/meminfo") as f:
-            meminfo = f.read()
-        total = int(re.search(r"MemTotal:\s+(\d+)", meminfo).group(1)) // 1024
-        avail = int(re.search(r"MemAvailable:\s+(\d+)", meminfo).group(1)) // 1024
-        info["memory"] = {
-            "total_mb": total,
-            "available_mb": avail,
-            "used_mb": total - avail,
-        }
-    except Exception:
-        pass
+    # Memory
+    if system_name == "Darwin":
+        try:
+            total_bytes = int(
+                subprocess.run(
+                    ["sysctl", "-n", "hw.memsize"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                ).stdout.strip()
+            )
+            info["memory"] = {"total_mb": total_bytes // (1024**2)}
+        except Exception:
+            pass
+    else:
+        try:
+            with open("/proc/meminfo") as f:
+                meminfo = f.read()
+            total = int(re.search(r"MemTotal:\s+(\d+)", meminfo).group(1)) // 1024
+            avail = int(re.search(r"MemAvailable:\s+(\d+)", meminfo).group(1)) // 1024
+            info["memory"] = {
+                "total_mb": total,
+                "available_mb": avail,
+                "used_mb": total - avail,
+            }
+        except Exception:
+            pass
 
     # Tailscale status
     try:
@@ -509,13 +541,12 @@ def create_starlette_app():
     sse_transport = SseServerTransport("/messages/")
 
     class TokenAuthMiddleware(BaseHTTPMiddleware):
-        """Reject requests without a valid Bearer token (if BRIDGE_TOKEN is set)."""
+        """Reject requests without a valid Bearer token."""
 
         async def dispatch(self, request: Request, call_next):
-            if not BRIDGE_TOKEN:
-                return await call_next(request)
             auth = request.headers.get("authorization", "")
-            if auth == f"Bearer {BRIDGE_TOKEN}":
+            expected = f"Bearer {BRIDGE_TOKEN}"
+            if hmac.compare_digest(auth, expected):
                 return await call_next(request)
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -548,7 +579,7 @@ def create_starlette_app():
 
     async def handle_download(request: Request):
         """Serve a file as raw bytes for binary transfer.
-        GET /download?path=/home/LaManna/file.png
+        GET /download?path=/Users/<username>/file.png
         """
         file_path = request.query_params.get("path", "")
         if not file_path:
@@ -594,11 +625,12 @@ if __name__ == "__main__":
         print("ERROR: uvicorn required. Install with: pip install uvicorn", file=sys.stderr)
         sys.exit(1)
 
+    if not BRIDGE_TOKEN:
+        print("[laptop-bridge] ERROR: BRIDGE_TOKEN is required and the server will not start", file=sys.stderr)
+        sys.exit(1)
+
     print(f"[laptop-bridge] Starting on {LISTEN_HOST}:{LISTEN_PORT}", file=sys.stderr)
-    if BRIDGE_TOKEN:
-        print("[laptop-bridge] Token auth enabled", file=sys.stderr)
-    else:
-        print("[laptop-bridge] WARNING: No BRIDGE_TOKEN set — unauthenticated!", file=sys.stderr)
+    print("[laptop-bridge] Token auth enabled", file=sys.stderr)
 
     starlette_app = create_starlette_app()
     uvicorn.run(starlette_app, host=LISTEN_HOST, port=LISTEN_PORT, log_level="info")

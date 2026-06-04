@@ -1,0 +1,72 @@
+#!/bin/bash
+# NAI Workbench — Custodian sidecar installer
+set -euo pipefail
+
+SERVICE_NAME="custodian-sidecar"
+VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
+RAW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -d "$HOME/projects/nai-workbench/custodian" ]; then
+    WORKBENCH_ROOT="$HOME/projects/nai-workbench"
+else
+    WORKBENCH_ROOT="$RAW_ROOT"
+fi
+
+SERVER_SCRIPT="$WORKBENCH_ROOT/custodian/sidecar_server.py"
+REQUIREMENTS_FILE="$WORKBENCH_ROOT/custodian/requirements.txt"
+UNIT_TEMPLATE="$WORKBENCH_ROOT/config/custodian-sidecar.service"
+UNIT_TARGET="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
+SESSION_REGISTRY_PATH="$WORKBENCH_ROOT/custodian/session_registry.db"
+
+echo "=== NAI Workbench Custodian Sidecar Installer ==="
+echo ""
+
+echo "[1/4] Checking prerequisites..."
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo "  ERROR: venv python not found at $VENV_PYTHON"
+    echo "  Run: python3 -m venv ~/.custodian-venv"
+    exit 1
+fi
+if [ ! -f "$SERVER_SCRIPT" ]; then
+    echo "  ERROR: server script not found at $SERVER_SCRIPT"
+    exit 1
+fi
+if [ ! -f "$UNIT_TEMPLATE" ]; then
+    echo "  ERROR: unit template not found at $UNIT_TEMPLATE"
+    exit 1
+fi
+echo "  -> Python: $VENV_PYTHON"
+echo "  -> Repo:   $WORKBENCH_ROOT"
+echo ""
+
+echo "[2/4] Installing sidecar Python dependencies..."
+"$VENV_PYTHON" -m pip install -q -r "$REQUIREMENTS_FILE"
+echo "  -> Requirements installed"
+echo ""
+
+echo "[3/4] Generating bearer token and installing systemd unit..."
+TOKEN="$($VENV_PYTHON - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
+mkdir -p "$HOME/.config/systemd/user"
+sed \
+    -e "s|__WORKING_DIRECTORY__|$WORKBENCH_ROOT|g" \
+    -e "s|__PYTHON__|$VENV_PYTHON|g" \
+    -e "s|__SCRIPT__|$SERVER_SCRIPT|g" \
+    -e "s|__TOKEN__|$TOKEN|g" \
+    -e "s|__SESSION_REGISTRY_PATH__|$SESSION_REGISTRY_PATH|g" \
+    "$UNIT_TEMPLATE" > "$UNIT_TARGET"
+echo "  -> $UNIT_TARGET"
+echo ""
+
+echo "[4/4] Enabling and starting service..."
+systemctl --user daemon-reload
+systemctl --user enable --now "$SERVICE_NAME"
+sleep 2
+systemctl --user status "$SERVICE_NAME" --no-pager || true
+echo ""
+echo "Bearer token for sidecar connector:"
+echo "$TOKEN"
+
+loginctl enable-linger "$(whoami)" 2>/dev/null || true

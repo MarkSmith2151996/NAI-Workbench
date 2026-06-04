@@ -1,0 +1,13 @@
+[Unit]
+Description=Custodian Box Bridge
+After=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/projects/nai-workbench
+ExecStart=/usr/bin/python3 -m uvicorn custodian.box_bridge:app --host 0.0.0.0 --port 9099
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

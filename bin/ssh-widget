@@ -1,0 +1,52 @@
+#!/bin/bash
+# NAI Workbench — SSH retry wrapper for Wave Terminal widgets
+# All remote widget SSH commands go through this instead of raw ssh -t.
+#
+# Usage:
+#   ssh-widget <remote-command>          # run command on PC
+#   ssh-widget                           # interactive shell
+#
+# Retries on disconnect (10s delay, matches watchdog recovery cycle).
+# Exit code 0 (normal quit) does NOT retry.
+#
+# Environment:
+#   NAI_PC_IP    — PC Tailscale IP   (default: 100.95.20.98)
+#   NAI_SSH_PORT — SSH port          (default: 2222)
+
+set -uo pipefail
+
+PC_IP="${NAI_PC_IP:-100.95.20.98}"
+SSH_PORT="${NAI_SSH_PORT:-2222}"
+RETRY_DELAY=10
+
+SSH_OPTS=(
+    -t
+    -p "$SSH_PORT"
+    -o ConnectTimeout=5
+    -o ServerAliveInterval=15
+    -o ServerAliveCountMax=3
+    -o StrictHostKeyChecking=accept-new
+)
+
+ATTEMPT=0
+
+while true; do
+    ATTEMPT=$((ATTEMPT + 1))
+
+    if [ $ATTEMPT -gt 1 ]; then
+        echo ""
+        echo -e "\033[0;33m[$(date '+%H:%M:%S')] Reconnecting... (attempt $ATTEMPT)\033[0m"
+        sleep "$RETRY_DELAY"
+    fi
+
+    ssh "${SSH_OPTS[@]}" "dev@${PC_IP}" "$@"
+    EXIT_CODE=$?
+
+    # Exit code 0 = normal exit, don't retry
+    if [ $EXIT_CODE -eq 0 ]; then
+        break
+    fi
+
+    # Show disconnect message
+    echo -e "\033[0;31m[$(date '+%H:%M:%S')] Connection lost (exit code $EXIT_CODE)\033[0m"
+done

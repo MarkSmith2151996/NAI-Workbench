@@ -9,7 +9,7 @@ This document is the definitive reference for operating, troubleshooting, and re
 | Item | Value |
 |------|-------|
 | PC Tailscale IP | `100.95.20.98` |
-| Laptop Tailscale IP | `100.79.63.10` (lamanna-arch) |
+| Mac Tailscale IP | `100.82.234.100` (`anthonys-macbook-pro`) |
 | WSL NAT IP | `172.21.37.202` (may change on reboot) |
 | SSH external port | `2222` (from laptop/Tailscale) |
 | SSH internal port | `2223` (sshd listens on `127.0.0.1:2223`) |
@@ -55,7 +55,7 @@ This is the most important section. If something is unreachable from the laptop,
 ### The Full Chain
 
 ```
-Arch Laptop (100.79.63.10)
+Mac (100.82.234.100 / anthonys-macbook-pro)
     │
     │  Tailscale VPN tunnel
     ▼
@@ -116,6 +116,8 @@ We tried `networkingMode=mirrored` in `.wslconfig`. Do not use it:
 | `9001` | `172.21.37.202:9001` | Penpot frontend | `penpot` | Maps `9001:8080` (nginx inside container listens on 8080) |
 | `9090` | `172.21.37.202:9090` | Komodo dashboard | `komodo` | Docker/system health UI |
 | `9091` | `172.21.37.202:9091` | code-server | N/A (systemd) | VS Code in browser |
+| `9099` | `172.21.37.202:9099` | box bridge | N/A (systemd) | REST proxy for cross-box project tools |
+| `8224` | `127.0.0.1:8224` | Custodian sidecar MCP | `custodian-sidecar` | Local-only diagnostic MCP; publish through Cloudflare tunnel |
 
 ---
 
@@ -180,9 +182,10 @@ netsh interface portproxy add v4tov4 listenport=2222 listenaddress=0.0.0.0 conne
 netsh interface portproxy add v4tov4 listenport=9001 listenaddress=0.0.0.0 connectport=9001 connectaddress=WSL_IP
 netsh interface portproxy add v4tov4 listenport=9090 listenaddress=0.0.0.0 connectport=9090 connectaddress=WSL_IP
 netsh interface portproxy add v4tov4 listenport=9091 listenaddress=0.0.0.0 connectport=9091 connectaddress=WSL_IP
+netsh interface portproxy add v4tov4 listenport=9099 listenaddress=0.0.0.0 connectport=9099 connectaddress=WSL_IP
 ```
 
-**Note**: The `2222 → 127.0.0.1:2223` rule never needs updating (uses localhost, not WSL IP). The other three rules (`9001`, `9090`, `9091`) point to the WSL NAT IP and need updating if it changes.
+**Note**: The `2222 → 127.0.0.1:2223` rule never needs updating (uses localhost, not WSL IP). The other four rules (`9001`, `9090`, `9091`, `9099`) point to the WSL NAT IP and need updating if it changes.
 
 ### Verify port proxy rules are correct
 
@@ -228,6 +231,32 @@ done
 # Or studio-status for just services:
 ~/projects/nai-workbench/bin/studio-status
 ```
+
+### Custodian sidecar
+
+```bash
+# Install / update the sidecar service
+~/projects/nai-workbench/bin/install-custodian-sidecar
+
+# Read sidecar logs
+journalctl --user -u custodian-sidecar -n 50 --no-pager
+
+# Local health checks
+curl http://127.0.0.1:8224/
+curl -H "Authorization: Bearer <SIDECAR_TOKEN>" http://127.0.0.1:8224/health
+```
+
+### Cloudflare sidecar ingress
+
+No tunnel config is currently checked into this repo. Add this ingress rule to the live `cloudflared` config that already fronts the workbench services:
+
+```yaml
+ingress:
+  - hostname: sidecar.lamannalogistics.com
+    service: http://127.0.0.1:8224
+```
+
+Then add the matching DNS CNAME in Cloudflare and, if Claude Desktop traffic gets challenged, add a WAF skip rule mirroring the existing Claude/MCP allowance used for other workbench endpoints.
 
 ---
 

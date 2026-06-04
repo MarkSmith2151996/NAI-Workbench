@@ -1,0 +1,38 @@
+#!/bin/bash
+# NAI Workbench — Build the universal sandbox base image
+#
+# Usage:
+#   bash bin/build-sandbox-image
+#
+# Creates: nai-sandbox:latest
+set -euo pipefail
+
+# Resolve project root — prefer ~/projects/nai-workbench (no spaces)
+_RAW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -d "$HOME/projects/nai-workbench/Dockerfile.sandbox" ] 2>/dev/null; then
+    ROOT="$HOME/projects/nai-workbench"
+elif [ -f "$_RAW_ROOT/Dockerfile.sandbox" ]; then
+    ROOT="$_RAW_ROOT"
+else
+    echo "ERROR: Cannot find Dockerfile.sandbox"
+    exit 1
+fi
+
+IMAGE_NAME="nai-sandbox:latest"
+
+echo "=== Building NAI Sandbox Base Image ==="
+echo "  Dockerfile: $ROOT/Dockerfile.sandbox"
+echo "  Image:      $IMAGE_NAME"
+echo ""
+
+docker build \
+    -t "$IMAGE_NAME" \
+    -f "$ROOT/Dockerfile.sandbox" \
+    "$ROOT"
+
+echo ""
+echo "=== SUCCESS ==="
+echo "Image: $IMAGE_NAME"
+docker images "$IMAGE_NAME" --format "Size: {{.Size}}"
+echo ""
+echo "Sandbox containers will now use this image (instant startup)."

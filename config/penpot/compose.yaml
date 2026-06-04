@@ -11,6 +11,7 @@ services:
       - penpot
     volumes:
       - penpot-assets:/opt/data/assets
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     env_file:
       - compose.env
 

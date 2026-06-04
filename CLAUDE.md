@@ -4,7 +4,7 @@ This repo contains the setup, config, and tooling for a persistent dev environme
 
 ## Stack
 - WSL2 Ubuntu 24.04 (NAT mode) + code-server + tmux + Docker
-- **Wave Terminal** (Windows + Arch laptop) — split panes, web widgets, WSL/SSH integration
+- **Wave Terminal** (Windows + Mac) — split panes, web widgets, WSL/SSH integration
 - **Textual TUI Dashboard** — real-time service health, Docker, system metrics
 - Komodo dashboard (web UI for Docker, projects, scripts)
 - Penpot (self-hosted Figma alternative — design/whiteboard)
@@ -16,7 +16,7 @@ This repo contains the setup, config, and tooling for a persistent dev environme
 ## Architecture
 
 ```
-Wave Terminal (Windows PC — local, or Arch Laptop — via Tailscale SSH)
+Wave Terminal (Windows PC — local, or Mac — via Tailscale SSH)
   ├─ Tab 1: "Workbench"
   │   ├─ Left pane: Textual TUI Dashboard
   │   └─ Right pane: Penpot (web widget → :9001)
@@ -31,7 +31,7 @@ Wave Terminal (Windows PC — local, or Arch Laptop — via Tailscale SSH)
 ### Remote Access Architecture
 
 ```
-Arch Laptop (100.79.63.10)
+Mac (100.82.234.100 / anthonys-macbook-pro)
     │
     │  Tailscale VPN tunnel
     ▼
@@ -49,6 +49,7 @@ Docker containers / systemd services
 - `0.0.0.0:9001` → `WSL_NAT_IP:9001` (Penpot)
 - `0.0.0.0:9090` → `WSL_NAT_IP:9090` (Komodo)
 - `0.0.0.0:9091` → `WSL_NAT_IP:9091` (code-server)
+- `0.0.0.0:9099` → `WSL_NAT_IP:9099` (box bridge)
 - `0.0.0.0:2222` → `127.0.0.1:2223` (sshd — uses localhost, immune to IP changes)
 
 - **PC widgets**: `wsl://Ubuntu-24.04` connections, `localhost` URLs
@@ -62,6 +63,7 @@ Docker containers / systemd services
 | `9001` | `WSL_IP:9001` | Penpot | Docker maps `9001:8080` (nginx listens on 8080 inside container) |
 | `9090` | `WSL_IP:9090` | Komodo | Docker maps `9090:9120` |
 | `9091` | `WSL_IP:9091` | code-server | VS Code in browser |
+| `9099` | `WSL_IP:9099` | box bridge | REST proxy for cross-box tool and file operations |
 | `7777` | `WSL_IP:7777` | Sandbox widget + /api/health | Alpha Builds preview iframe + health endpoint |
 
 ## Networking
@@ -130,6 +132,12 @@ The Custodian MCP server (`custodian/mcp_server.py`) exposes these tools:
 - `penpot_list_projects/get_page/export_svg` — Penpot design integration
 - `laptop_read/write/edit_file`, `laptop_run_command`, `laptop_glob`, `laptop_grep`, `laptop_list_dir`, `laptop_system_info`, `laptop_download_file` — Remote laptop access over Tailscale
 - `agent_list/create/update/delete/run/runs` — Agent Factory (see below)
+- `memory_store/search/list/update/delete/context` — Persistent Memory (see below)
+
+**CRITICAL — Tool Selection Rules**:
+1. **`laptop_*` tools are for the REMOTE Mac (100.82.234.100 / `anthonys-macbook-pro`) over Tailscale ONLY.** They do NOT access this PC or WSL. For ANY local file (including Windows paths like `C:\`, `E:\`, `/mnt/c/`, `/home/dev/`), ALWAYS use the built-in `Read`, `Write`, `Edit`, `Grep`, `Glob` tools. Only use `laptop_*` when the user EXPLICITLY says "on the laptop" or references `/Users/<username>/`.
+2. **`sandbox_exec` runs commands inside Docker containers**, not locally. For local shell commands, use the built-in `Bash` tool.
+3. **`memory_store/search/etc.` is the primary memory system.** The flat `MEMORY.md` file is legacy — prefer the MCP memory tools for storing and retrieving persistent knowledge.
 
 ### Agent Factory (MCP Tools)
 The Agent Factory lets you create, manage, and run persistent AI agents stored in the shared Workbench database. Agents created from any Claude session are visible in the Admin TUI and other sessions.
@@ -171,6 +179,29 @@ agent_run(agent="fba-scraper", prompt="Write a Playwright script that searches A
 - The Admin TUI Agent Factory tab shows the same agents and run history
 - Each run records: status, output, tokens used, errors, start/finish time
 
+### Persistent Memory (MCP Tools)
+SQLite-backed, searchable memory shared across all Claude sessions via the custodian MCP server. Replaces flat MEMORY.md files.
+
+**Tools:**
+- `memory_store(content, tags?, project?, importance?)` — Save a memory. Tags are JSON arrays, project binds to a registered project (omit for global). Importance: 1-10 (default 5).
+- `memory_search(query?, project?, tags?, limit?)` — Full-text search with FTS5/bm25 ranking. Filter by project and/or tags.
+- `memory_list(project?, limit?, offset?)` — Browse all memories sorted by importance, paginated.
+- `memory_update(id, content?, tags?, importance?)` — Modify a memory by ID.
+- `memory_delete(id)` — Permanently delete a memory.
+- `memory_context(project?, topics?, limit?)` — Session-start context loader: merges high-importance (>=7), recently-accessed, and topic-matched memories.
+
+**Importance scale:**
+- 1-3: Minor notes, temporary observations
+- 4-6: Useful patterns, preferences, general knowledge
+- 7-8: Important gotchas, architectural decisions, recurring issues
+- 9-10: Critical invariants, security concerns, things that break if forgotten
+
+**When to use:**
+- Save confirmed patterns, gotchas, and decisions (not speculative or session-specific)
+- Use `memory_context` at session start to prime context
+- Use `memory_search` before saving to avoid duplicates
+- Tag generously — tags power filtering (`["sqlite", "gotcha", "mcp"]`)
+
 ## How It Works
 Wave Terminal is the primary interface. The TUI dashboard (`dashboard/dashboard.py`) runs in a Wave terminal pane showing service health, Docker containers, tmux sessions, projects, and system metrics with real-time auto-refresh. Claude CLI runs in a separate Wave pane with full MCP tool access. Penpot and Komodo load as Wave web widget panes. Wave config files in `config/wave/` define sidebar widget buttons for quick access.
 
@@ -200,7 +231,7 @@ Wave Terminal is the primary interface. The TUI dashboard (`dashboard/dashboard.
 
 ## Laptop Bridge MCP Server
 
-Remote MCP server that runs on the Arch laptop so the PC's Claude Code can operate on laptop files over Tailscale.
+Remote MCP server that runs on the Mac so the PC's Claude Code can operate on Mac files over Tailscale.
 
 ### First-time setup (run on the laptop)
 
@@ -209,7 +240,7 @@ cd ~/NAI-Workbench/laptop-bridge
 bash install.sh
 ```
 
-This installs deps (`mcp`, `uvicorn`, `starlette`), generates a token, creates a systemd user service, and starts it. Copy the printed token into the PC's `.claude/mcp.json` under `laptop-bridge.headers.Authorization`.
+This installs deps (`mcp`, `uvicorn`, `starlette`) and generates a token. On macOS, persistence should be configured with a LaunchAgent; the included `install.sh` systemd section is Linux-only. Copy the printed token into the PC's Custodian MCP environment as `LAPTOP_BRIDGE_TOKEN`.
 
 ### Updating after code changes
 
@@ -227,9 +258,9 @@ systemctl --user restart laptop-bridge
 ```
 
 ### Key details
-- Binds to Tailscale IP only (`100.79.63.10:8222`)
+- Binds for the Mac bridge at `100.82.234.100:8222` (`anthonys-macbook-pro`)
 - Bearer token auth on every request
-- 8 tools: `laptop_read_file`, `laptop_write_file`, `laptop_edit_file`, `laptop_run_command`, `laptop_glob`, `laptop_grep`, `laptop_list_dir`, `laptop_system_info`
+- 9 tools: `laptop_read_file`, `laptop_write_file`, `laptop_edit_file`, `laptop_run_command`, `laptop_glob`, `laptop_grep`, `laptop_list_dir`, `laptop_system_info`, `laptop_download_file`
 - Files: `laptop-bridge/server.py`, `laptop-bridge/install.sh`
 
 ## Known Gotchas

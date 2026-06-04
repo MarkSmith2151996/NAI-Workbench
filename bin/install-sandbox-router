@@ -1,0 +1,94 @@
+#!/bin/bash
+# NAI Workbench — Sandbox Router service installer
+# Runs sandbox_router.py as a standalone systemd user service on port 7777.
+# Port 7777 stays up regardless of MCP server lifecycle.
+#
+# Usage:
+#   bash bin/install-sandbox-router
+set -euo pipefail
+
+SERVICE_NAME="sandbox-router"
+VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
+# Resolve script path — prefer ~/projects/nai-workbench (no spaces)
+_RAW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -d "$HOME/projects/nai-workbench/custodian" ]; then
+    ROUTER_SCRIPT="$HOME/projects/nai-workbench/custodian/sandbox_router.py"
+else
+    ROUTER_SCRIPT="$_RAW_ROOT/custodian/sandbox_router.py"
+fi
+
+echo "=== NAI Workbench Sandbox Router Installer ==="
+echo ""
+
+# --- 1. Verify prerequisites ---
+echo "[1/3] Checking prerequisites..."
+
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo "  ERROR: venv python not found at $VENV_PYTHON"
+    echo "  Run: python3 -m venv ~/.custodian-venv"
+    exit 1
+fi
+
+if [ ! -f "$ROUTER_SCRIPT" ]; then
+    echo "  ERROR: sandbox_router.py not found at $ROUTER_SCRIPT"
+    exit 1
+fi
+
+echo "  -> Python: $VENV_PYTHON"
+echo "  -> Script: $ROUTER_SCRIPT"
+
+# --- 2. Create systemd user service ---
+echo ""
+echo "[2/3] Creating systemd user service..."
+mkdir -p "$HOME/.config/systemd/user"
+
+cat > "$HOME/.config/systemd/user/${SERVICE_NAME}.service" << UNIT
+[Unit]
+Description=NAI Workbench Sandbox Router — preview widget on port 7777
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$VENV_PYTHON $ROUTER_SCRIPT
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+UNIT
+
+echo "  -> ~/.config/systemd/user/${SERVICE_NAME}.service"
+
+# --- 3. Enable and start ---
+echo ""
+echo "[3/3] Enabling and starting service..."
+systemctl --user daemon-reload
+systemctl --user enable "$SERVICE_NAME"
+systemctl --user restart "$SERVICE_NAME"
+sleep 2
+
+if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+    echo ""
+    echo "=== SUCCESS ==="
+    echo "Sandbox router is running on port 7777."
+    echo ""
+    echo "Commands:"
+    echo "  status:   systemctl --user status $SERVICE_NAME"
+    echo "  logs:     journalctl --user -u $SERVICE_NAME -f"
+    echo "  restart:  systemctl --user restart $SERVICE_NAME"
+    echo "  test:     curl -s http://localhost:7777/api/health | python3 -m json.tool"
+    echo ""
+    echo "The MCP server will detect port 7777 is already bound and skip"
+    echo "starting its own router thread."
+else
+    echo ""
+    echo "=== FAILED ==="
+    echo "Service did not start. Check logs:"
+    echo "  journalctl --user -u $SERVICE_NAME -n 20"
+    exit 1
+fi
+
+# Enable lingering so service runs without login session
+loginctl enable-linger "$(whoami)" 2>/dev/null || true

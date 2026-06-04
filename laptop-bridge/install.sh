@@ -1,6 +1,6 @@
 #!/bin/bash
 # NAI Workbench — Laptop Bridge MCP Server installer
-# Run on the Arch laptop as your regular user (LaManna).
+# Run on the Mac or a Linux laptop as your regular user.
 #
 # Usage:
 #   bash install.sh              # Interactive — prompts for token
@@ -9,7 +9,7 @@ set -euo pipefail
 
 BRIDGE_DIR="$HOME/laptop-bridge"
 SERVICE_NAME="laptop-bridge"
-BRIDGE_HOST="${BRIDGE_HOST:-100.79.63.10}"
+BRIDGE_HOST="${BRIDGE_HOST:-0.0.0.0}"
 BRIDGE_PORT="${BRIDGE_PORT:-8222}"
 
 echo "=== NAI Workbench Laptop Bridge Installer ==="
@@ -45,6 +45,7 @@ else
 fi
 
 # --- 4. Create systemd user service ---
+# Linux only: macOS persistence should use a LaunchAgent plist instead.
 echo "[4/5] Creating systemd user service..."
 mkdir -p "$HOME/.config/systemd/user"
 

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """NAI Workbench — ADMIN 01: Custodian Administration TUI.
 
-8 tabs:
+10 tabs:
 - Projects: Import from GitHub, register local, manage projects
 - Custodian: Index projects (trigger Sonnet)
 - Fossils: Browse fossil history, view details, compare
 - Detective: Run analysis, view insights, refine prompts
 - Status: System overview (DB stats, project status)
-- Editor: File browser + code editor + persistent Claude Code chat
+- Editor: File browser + code editor + persistent OpenCode chat
 - Agent Factory: Create, configure, and run AI agents (Claude Agent SDK)
 - Alpha Builds: Docker container-based project sandboxes
+- Devices: Multi-device pairing and management
+- Ticker: Configure scrolling ticker overlay segments and settings
 """
 
 import json
@@ -19,7 +21,6 @@ import signal
 import sqlite3
 import subprocess
 import sys
-import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -47,8 +48,15 @@ from textual.widgets import (
 from textual.binding import Binding
 from textual import work
 
+from opencode_runner import OpenCodeRunnerError, list_available_models, run_opencode
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custodian.db")
 PROJECTS_DIR = os.path.expanduser("~/projects")
+OPENCODE_BIN = os.environ.get("NAI_WORKBENCH_OPENCODE_BIN", os.path.expanduser("~/.opencode/bin/opencode"))
+OPENCODE_MODEL = os.environ.get("NAI_WORKBENCH_OPENCODE_MODEL", "openai/gpt-5.4")
+BOX_TOOL_PORT_MIN = 9100
+BOX_TOOL_PORT_MAX = 9199
+BOX_TOOL_SERVER_CONTAINER_PATH = "/opt/box-tools/server.py"
 
 # Detect WSL and provide path translation
 import platform as _platform
@@ -68,7 +76,31 @@ def _to_native_path(path):
         return f"/mnt/{drive}/{rest}"
     return path
 
-# System prompt injected into every Editor Claude session so it knows about
+
+def _load_agent_model_choices():
+    """Load available OpenCode model IDs once for the Agent Factory form."""
+    try:
+        models = list_available_models()
+    except OpenCodeRunnerError as e:
+        return [], None, str(e)
+    if not models:
+        return [], None, "OpenCode returned no available OpenAI models."
+    default = "openai/gpt-5.4" if "openai/gpt-5.4" in models else models[0]
+    return [(model, model) for model in models], default, None
+
+
+def _agent_model_options_with_current(options, current_model):
+    """Include the saved model even if it no longer appears in the live list."""
+    if not current_model:
+        return options
+
+    values = {value for _, value in options}
+    if current_model in values:
+        return options
+
+    return options + [(f"{current_model} (deprecated)", current_model)]
+
+# Startup prompt injected into every new Editor OpenCode session so it knows about
 # the fossil system, MCP tools, and registered projects — same architecture
 # as the rest of the custodian system.
 EDITOR_SYSTEM_PROMPT = """\
@@ -224,7 +256,7 @@ def get_agent(agent_id):
     return dict(row) if row else None
 
 
-def save_agent(name, system_prompt, description="", model="sonnet",
+def save_agent(name, system_prompt, description="", model="openai/gpt-5.4",
                project_id=None, max_turns=20, tools=None, mcp_servers=None,
                agent_id=None):
     """Create or update an agent."""
@@ -462,6 +494,197 @@ def register_project(name, path, stack=""):
                stack = excluded.stack,
                status = 'active'""",
         (name, path, stack),
+    )
+    project = conn.execute(
+        "SELECT id, name, path, stack FROM projects WHERE name = ?",
+        (name,),
+    ).fetchone()
+    conn.commit()
+    conn.close()
+
+    try:
+        _provision_project_box(project["id"], project["name"], project["path"], project["stack"] or "")
+    except Exception as e:
+        print(f"[project-box] Admin registration provision warning for {name}: {e}", file=sys.stderr)
+
+
+def _pick_box_image(project_name, project_path, stack=""):
+    """Match MCP server image selection without importing its runtime."""
+    devcontainer_path = os.path.join(project_path, ".devcontainer")
+    if os.path.isdir(devcontainer_path):
+        dockerfile = os.path.join(devcontainer_path, "Dockerfile")
+        if os.path.isfile(dockerfile):
+            image_name = f"alpha-{project_name}:latest"
+            subprocess.run(
+                ["docker", "build", "-t", image_name, "-f", dockerfile, project_path],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            return image_name
+
+    check = subprocess.run(
+        ["docker", "image", "inspect", "nai-sandbox:latest"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if check.returncode == 0:
+        return "nai-sandbox:latest"
+    if "Python" in stack:
+        return "python:3.12"
+    if any(s in stack for s in ("Node", "React", "Next", "Electron")):
+        return "node:22"
+    return "python:3.12"
+
+
+def _auto_install_box_deps(container_name, project_path):
+    """Best-effort dependency install for newly provisioned project boxes."""
+    req_txt = os.path.join(project_path, "requirements.txt")
+    pkg_json = os.path.join(project_path, "package.json")
+    if os.path.isfile(req_txt):
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "bash", "-c", "pip install -q -r requirements.txt 2>/dev/null"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    elif os.path.isfile(pkg_json):
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "bash", "-c", "npm install --silent 2>/dev/null"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+
+def _allocate_tool_server_port(conn, project_id):
+    existing = conn.execute(
+        "SELECT tool_server_port FROM project_boxes WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()
+    if existing and existing[0]:
+        return int(existing[0])
+
+    used = {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT tool_server_port FROM project_boxes WHERE tool_server_port IS NOT NULL"
+        ).fetchall()
+    }
+    for port in range(BOX_TOOL_PORT_MIN, BOX_TOOL_PORT_MAX + 1):
+        if port not in used:
+            return port
+    raise RuntimeError("No available tool server ports in range 9100-9199")
+
+
+def _copy_and_start_box_tool_server(container_name, port):
+    source_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "box_tool_server.py")
+    subprocess.run(
+        ["docker", "exec", container_name, "mkdir", "-p", "/opt/box-tools"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    subprocess.run(
+        ["docker", "cp", source_path, f"{container_name}:{BOX_TOOL_SERVER_CONTAINER_PATH}"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+
+    has_tools = subprocess.run(
+        ["docker", "exec", container_name, "test", "-d", "/workspace/tools"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if has_tools.returncode != 0:
+        return
+
+    subprocess.run(
+        ["docker", "exec", container_name, "sh", "-c", f"pkill -f '{BOX_TOOL_SERVER_CONTAINER_PATH}' >/dev/null 2>&1 || true"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    subprocess.run(
+        [
+            "docker", "exec", "-d",
+            "-e", f"BOX_TOOL_PORT={int(port)}",
+            container_name,
+            "python3", BOX_TOOL_SERVER_CONTAINER_PATH,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+
+
+def _provision_project_box(project_id, project_name, project_path, stack="", env_vars=None):
+    """Best-effort local project box provisioning for admin-side registration."""
+    env_vars = env_vars or {}
+    native_project_path = _to_native_path(project_path)
+    container_name = f"alpha-{project_name}"
+    conn = get_db()
+    tool_server_port = _allocate_tool_server_port(conn, project_id)
+    inspect = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Config.Image}}|{{.State.Running}}", container_name],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    if inspect.returncode == 0:
+        image_name, running = (inspect.stdout.strip().split("|", 1) + [""])[:2]
+        if running.strip().lower() != "true":
+            start = subprocess.run(
+                ["docker", "start", container_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if start.returncode != 0:
+                raise RuntimeError((start.stderr or start.stdout or "docker start failed").strip())
+    else:
+        image_name = _pick_box_image(project_name, native_project_path, stack)
+        run_cmd = [
+            "docker", "run", "-d", "--network", "host", "--name", container_name,
+            "-v", f"{native_project_path}:/workspace", "-w", "/workspace",
+            "--restart", "unless-stopped",
+        ]
+        for key, value in sorted(env_vars.items()):
+            run_cmd += ["-e", f"{key}={value}"]
+        run_cmd += [image_name, "sleep", "infinity"]
+        run = subprocess.run(run_cmd, capture_output=True, text=True, timeout=60)
+        if run.returncode != 0:
+            raise RuntimeError((run.stderr or run.stdout or "docker run failed").strip())
+        _auto_install_box_deps(container_name, native_project_path)
+
+    _copy_and_start_box_tool_server(container_name, tool_server_port)
+
+    conn.execute(
+        """
+        INSERT INTO project_boxes (
+            project_id, container_name, image, status, env_vars, ports, tool_server_port,
+            restart_policy, error_message, created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'running', ?, '{}', ?, 'unless-stopped', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(project_id) DO UPDATE SET
+            container_name = excluded.container_name,
+            image = excluded.image,
+            status = 'running',
+            env_vars = excluded.env_vars,
+            ports = excluded.ports,
+            tool_server_port = excluded.tool_server_port,
+            restart_policy = excluded.restart_policy,
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (project_id, container_name, image_name, json.dumps(env_vars), tool_server_port),
     )
     conn.commit()
     conn.close()
@@ -880,6 +1103,7 @@ class CustodianAdmin(App):
         Binding("a", "focus_tab('agents')", "Agents"),
         Binding("b", "focus_tab('builds')", "Builds"),
         Binding("v", "focus_tab('devices')", "Devices"),
+        Binding("t", "focus_tab('ticker')", "Ticker"),
     ]
 
     def __init__(self):
@@ -899,21 +1123,24 @@ class CustodianAdmin(App):
         self._claude_running: bool = False
         self._claude_edited_files: set = set()
         self._workbench_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self._session_file = os.path.join(os.path.expanduser("~"), ".custodian_claude_session")
+        self._session_file = os.path.join(os.path.expanduser("~"), ".custodian_opencode_session")
         # Agent Factory state
         self._selected_agent_id: int | None = None
         self._agent_running: bool = False
+        self._agent_model_options, self._agent_model_default, self._agent_model_error = _load_agent_model_choices()
         # Alpha Builds state
         self._selected_build_id: int | None = None
         self._build_card_gen = 0
         # Devices tab state
         self._selected_device_id: int | None = None
+        # Ticker overlay state
+        self._ticker_overlay_proc: subprocess.Popen | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static("NAI WORKBENCH — ADMIN 01", id="title-bar")
 
-        with TabbedContent("Projects", "Custodian", "Fossils", "Detective", "Status", "Editor", "Agent Factory", "Alpha Builds", "Devices"):
+        with TabbedContent("Projects", "Custodian", "Fossils", "Detective", "Status", "Editor", "Agent Factory", "Alpha Builds", "Devices", "Ticker"):
             # ── Projects Tab ─────────────────────────────────
             with TabPane("Projects", id="tab-projects"):
                 with VerticalScroll(classes="tab-content"):
@@ -1072,7 +1299,7 @@ class CustodianAdmin(App):
                         yield RichLog(id="claude-chat-log", highlight=True, markup=True)
                         with Horizontal(id="chat-input-bar"):
                             yield Input(
-                                placeholder="Ask Claude...",
+                                placeholder="Ask OpenCode...",
                                 id="chat-input",
                             )
                             yield Button("Send", variant="success", id="btn-claude-send")
@@ -1098,11 +1325,17 @@ class CustodianAdmin(App):
                             with Vertical(id="agent-editor-form"):
                                 with Horizontal(classes="input-bar"):
                                     yield Input(placeholder="Agent name", id="agent-name-input", classes="name-input")
-                                    yield Select(
-                                        [("sonnet", "sonnet"), ("opus", "opus"), ("haiku", "haiku")],
-                                        value="sonnet",
-                                        id="agent-model-select",
-                                    )
+                                    if self._agent_model_error:
+                                        yield Static(
+                                            "Could not load model list — OpenCode unavailable. Restart Custodian after fixing.",
+                                            id="agent-model-error",
+                                        )
+                                    else:
+                                        yield Select(
+                                            self._agent_model_options,
+                                            value=self._agent_model_default,
+                                            id="agent-model-select",
+                                        )
                                     yield Select(
                                         [],
                                         prompt="Project (optional)",
@@ -1161,6 +1394,38 @@ class CustodianAdmin(App):
                     yield Static("", id="pairing-code-display")
                     yield RichLog(id="devices-log", highlight=True, markup=True)
 
+            # ── Ticker Tab ──────────────────────────────────────
+            with TabPane("Ticker", id="tab-ticker"):
+                with Vertical(classes="tab-content"):
+                    yield Static("Ticker Segments", classes="section-header")
+                    yield DataTable(id="ticker-segments-table")
+                    with Horizontal(classes="action-bar"):
+                        yield Button("Move Up", variant="default", id="btn-ticker-up")
+                        yield Button("Move Down", variant="default", id="btn-ticker-down")
+                        yield Button("Toggle", variant="primary", id="btn-ticker-toggle")
+                    yield Static("Overlay Settings", classes="section-header")
+                    with Horizontal(classes="action-bar"):
+                        yield Label("Speed:")
+                        yield Input(value="50", id="ticker-speed", type="integer")
+                        yield Label("Opacity %:")
+                        yield Input(value="85", id="ticker-opacity", type="integer")
+                        yield Label("Height px:")
+                        yield Input(value="28", id="ticker-height", type="integer")
+                    with Horizontal(classes="action-bar"):
+                        yield Label("Position:")
+                        yield Select(
+                            [("Top", "top"), ("Bottom", "bottom")],
+                            value="top",
+                            id="ticker-position",
+                        )
+                        yield Label("Poll sec:")
+                        yield Input(value="3", id="ticker-poll", type="integer")
+                    with Horizontal(classes="action-bar"):
+                        yield Button("Save Settings", variant="success", id="btn-ticker-save")
+                        yield Button("Launch Overlay", variant="primary", id="btn-ticker-launch")
+                        yield Button("Stop Overlay", variant="error", id="btn-ticker-stop")
+                    yield Static("", id="ticker-preview")
+
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1180,6 +1445,7 @@ class CustodianAdmin(App):
         self._refresh_agents_tab()
         self._refresh_builds_tab()
         self._refresh_devices_tab()
+        self._refresh_ticker_tab()
 
     def _load_projects(self):
         """Load projects and populate all select widgets."""
@@ -1639,10 +1905,10 @@ class CustodianAdmin(App):
         # Detective tab
         elif button_id == "btn-detective-quick":
             det_select = self.query_one("#detective-project-select", Select)
-            self._do_detective("sonnet", det_select.value)
+            self._do_detective("openai/gpt-5.4", det_select.value)
         elif button_id == "btn-detective-deep":
             det_select = self.query_one("#detective-project-select", Select)
-            self._do_detective("opus", det_select.value)
+            self._do_detective("openai/gpt-5.4", det_select.value)
         elif button_id == "btn-refine-prompt":
             self._do_refine_prompt()
         # Editor tab — project
@@ -1716,6 +1982,19 @@ class CustodianAdmin(App):
             self._do_generate_pair_code()
         elif button_id == "btn-remove-device":
             self._do_remove_device()
+        # Ticker tab
+        elif button_id == "btn-ticker-up":
+            self._move_ticker_segment(-1)
+        elif button_id == "btn-ticker-down":
+            self._move_ticker_segment(1)
+        elif button_id == "btn-ticker-toggle":
+            self._toggle_ticker_segment()
+        elif button_id == "btn-ticker-save":
+            self._save_ticker_settings()
+        elif button_id == "btn-ticker-launch":
+            self._launch_ticker_overlay()
+        elif button_id == "btn-ticker-stop":
+            self._stop_ticker_overlay()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         select_id = event.select.id
@@ -2449,7 +2728,12 @@ class CustodianAdmin(App):
             self.query_one("#agent-prompt-textarea", TextArea).load_text(
                 agent["system_prompt"] or ""
             )
-            self.query_one("#agent-model-select", Select).value = agent["model"]
+            if not self._agent_model_error:
+                model_select = self.query_one("#agent-model-select", Select)
+                model_select.set_options(
+                    _agent_model_options_with_current(self._agent_model_options, agent["model"])
+                )
+                model_select.value = agent["model"]
             turns_input = self.query_one("#agent-turns-input", Input)
             turns_input.value = str(agent["max_turns"] or 20)
             if agent["project_id"]:
@@ -2493,7 +2777,10 @@ class CustodianAdmin(App):
             self.query_one("#agent-name-input", Input).value = ""
             self.query_one("#agent-desc-input", Input).value = ""
             self.query_one("#agent-prompt-textarea", TextArea).load_text("")
-            self.query_one("#agent-model-select", Select).value = "sonnet"
+            if self._agent_model_default:
+                model_select = self.query_one("#agent-model-select", Select)
+                model_select.set_options(self._agent_model_options)
+                model_select.value = self._agent_model_default
             self.query_one("#agent-turns-input", Input).value = "20"
         except Exception:
             pass
@@ -2505,6 +2792,9 @@ class CustodianAdmin(App):
             name = self.query_one("#agent-name-input", Input).value.strip()
             desc = self.query_one("#agent-desc-input", Input).value.strip()
             prompt = self.query_one("#agent-prompt-textarea", TextArea).text.strip()
+            if self._agent_model_error:
+                self.notify(f"Model list unavailable: {self._agent_model_error}", severity="error")
+                return
             model = self.query_one("#agent-model-select", Select).value
             turns_raw = self.query_one("#agent-turns-input", Input).value.strip()
             max_turns = int(turns_raw) if turns_raw else 20
@@ -2567,25 +2857,6 @@ class CustodianAdmin(App):
 
         run_id = create_agent_run(agent["id"], input_text=agent["system_prompt"])
 
-        # Build Claude CLI command
-        env = os.environ.copy()
-        for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
-            env.pop(key, None)
-
-        model_flag = {
-            "sonnet": "sonnet",
-            "opus": "opus",
-            "haiku": "haiku",
-        }.get(agent["model"], "sonnet")
-
-        cmd = [
-            "claude", "-p",
-            "--output-format", "stream-json",
-            "--model", model_flag,
-            "--max-turns", str(agent["max_turns"] or 20),
-            "--append-system-prompt", agent["system_prompt"],
-        ]
-
         # Set working directory to project path if bound
         cwd = self._workbench_path
         if agent.get("project_id"):
@@ -2597,64 +2868,47 @@ class CustodianAdmin(App):
             if proj:
                 cwd = _to_native_path(proj["path"])
 
-        output_buffer = []
         try:
-            proc = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, env=env, cwd=cwd,
+            prompt = agent.get("description") or f"Execute your purpose as {agent['name']}"
+            result = run_opencode(
+                prompt=prompt,
+                model=agent["model"],
+                system_prompt=agent["system_prompt"],
+                project_dir=cwd,
+                max_turns=agent.get("max_turns"),
+                timeout=600,
             )
 
-            # Send a starter prompt
-            prompt = agent.get("description") or f"Execute your purpose as {agent['name']}"
-            proc.stdin.write(prompt)
-            proc.stdin.close()
+            for line in result.text.split("\n"):
+                if line.strip():
+                    log.write(line)
 
-            for raw_line in iter(proc.stdout.readline, ""):
-                raw_line = raw_line.strip()
-                if not raw_line:
-                    continue
-                try:
-                    event_data = json.loads(raw_line)
-                    text = self._extract_text_from_event(event_data)
-                    if text:
-                        output_buffer.append(text)
-                        for line in text.split("\n"):
-                            if line.strip():
-                                log.write(line)
-                    if event_data.get("type") == "result":
-                        tokens = event_data.get("usage", {}).get("total_tokens", 0)
-                        cost = event_data.get("cost_usd")
-                        meta = []
-                        if tokens:
-                            meta.append(f"{tokens} tokens")
-                        if cost is not None:
-                            meta.append(f"${cost:.4f}")
-                        if meta:
-                            log.write(f"[dim]({', '.join(meta)})[/dim]")
-                        complete_agent_run(
-                            run_id, status="completed",
-                            output="\n".join(output_buffer),
-                            tokens_used=tokens,
-                        )
-                except json.JSONDecodeError:
-                    continue
+            meta = []
+            if result.tokens_used:
+                meta.append(f"{result.tokens_used} tokens")
+            if result.cost_usd is not None:
+                meta.append(f"${result.cost_usd:.4f}")
+            if meta:
+                log.write(f"[dim]({', '.join(meta)})[/dim]")
 
-            proc.wait()
-            if proc.returncode != 0:
-                stderr = proc.stderr.read().strip()
-                if stderr:
-                    log.write(f"[red]{stderr}[/red]")
-                complete_agent_run(
-                    run_id, status="failed",
-                    output="\n".join(output_buffer),
-                    error=stderr,
-                )
-            else:
-                log.write(f"[bold green]Agent run complete[/bold green]")
+            complete_agent_run(
+                run_id,
+                status="completed",
+                output=result.text,
+                tokens_used=result.tokens_used,
+            )
+            log.write(f"[bold green]Agent run complete[/bold green]")
 
-        except FileNotFoundError:
-            log.write("[red]Claude CLI not found. Is 'claude' on PATH?[/red]")
-            complete_agent_run(run_id, status="failed", error="Claude CLI not found")
+        except OpenCodeRunnerError as e:
+            if e.stderr:
+                log.write(f"[red]{e.stderr}[/red]")
+            complete_agent_run(
+                run_id,
+                status="failed",
+                output=e.text,
+                tokens_used=e.tokens_used,
+                error=e.stderr or str(e),
+            )
         except Exception as e:
             log.write(f"[red]Error: {type(e).__name__}: {e}[/red]")
             complete_agent_run(run_id, status="failed", error=str(e))
@@ -2880,7 +3134,7 @@ class CustodianAdmin(App):
         try:
             result = subprocess.run(
                 [
-                    "docker", "run", "-d",
+                    "docker", "run", "-d", "--network", "host",
                     "--name", container_name,
                     "-v", f"{project_path}:/workspace",
                     "-w", "/workspace",
@@ -3183,8 +3437,12 @@ class CustodianAdmin(App):
         session = self._load_claude_session()
         label = self.query_one("#session-label", Static)
         if session:
-            self._claude_session_id = session["session_id"]
-            label.update(f"Session: {self._claude_session_id[:12]}... (saved)")
+            session_id = session.get("session_id")
+            self._claude_session_id = session_id
+            if session_id:
+                label.update(f"Session: {session_id[:12]}... (saved)")
+            else:
+                label.update("No session")
         else:
             label.update("No session")
         self._refresh_git_status()
@@ -3470,6 +3728,15 @@ class CustodianAdmin(App):
         except OSError as e:
             self.notify(f"Could not save session: {e}", severity="error")
 
+    def _clear_claude_session(self):
+        """Remove any saved OpenCode session."""
+        try:
+            os.remove(self._session_file)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            self.notify(f"Could not clear session: {e}", severity="error")
+
     def _get_fossil_briefs(self):
         """Fetch one-line summaries for all projects from the latest fossils."""
         try:
@@ -3496,20 +3763,20 @@ class CustodianAdmin(App):
             return "  (could not load project briefs)"
 
     def _do_new_claude_session(self):
-        """Generate a new Claude session UUID."""
-        self._claude_session_id = str(uuid.uuid4())
-        self._save_claude_session(self._claude_session_id)
+        """Clear the current OpenCode session and prepare a fresh one."""
+        self._claude_session_id = None
+        self._clear_claude_session()
 
         label = self.query_one("#session-label", Static)
-        label.update(f"Session: {self._claude_session_id[:12]}... [green]ready[/green]")
+        label.update("Session: new [green]ready[/green]")
 
         chat_log = self.query_one("#claude-chat-log", RichLog)
         chat_log.clear()
-        chat_log.write(f"[bold green]Developer session ready[/bold green] ({self._claude_session_id[:8]})")
+        chat_log.write("[bold green]OpenCode session ready[/bold green]")
         chat_log.write("")
-        chat_log.write("[bold]Claude is your on-demand developer. Tell it what to build, fix, or change.[/bold]")
+        chat_log.write("[bold]OpenCode is your on-demand developer. Tell it what to build, fix, or change.[/bold]")
         chat_log.write("[dim]Tools: Read, Edit, Write, Bash, Glob, Grep + Custodian MCP (fossils, symbols, insights)[/dim]")
-        chat_log.write("[dim]Open a file in the tree → Claude sees it as context. Editor auto-reloads after edits.[/dim]")
+        chat_log.write("[dim]Open a file in the tree -> OpenCode sees it as context. Editor auto-reloads after edits.[/dim]")
         chat_log.write("[dim]Session persists across restarts. Use 'Resume' to continue later.[/dim]")
         chat_log.write("")
 
@@ -3520,13 +3787,18 @@ class CustodianAdmin(App):
             self.notify("No saved session found", severity="warning")
             return
 
-        self._claude_session_id = session["session_id"]
+        session_id = session.get("session_id")
+        if not session_id:
+            self.notify("Saved session is missing an id", severity="error")
+            return
+
+        self._claude_session_id = session_id
         label = self.query_one("#session-label", Static)
-        label.update(f"Session: {self._claude_session_id[:12]}... (resumed)")
+        label.update(f"Session: {session_id[:12]}... (resumed)")
 
         chat_log = self.query_one("#claude-chat-log", RichLog)
         chat_log.write(
-            f"[bold blue]Resumed session: {self._claude_session_id}[/bold blue]\n"
+            f"[bold blue]Resumed OpenCode session: {self._claude_session_id}[/bold blue]\n"
             f"Created: {session.get('created_at', 'unknown')}"
         )
         self.notify("Session resumed")
@@ -3587,19 +3859,15 @@ class CustodianAdmin(App):
         return "\n".join(parts)
 
     def _do_send_claude_message(self):
-        """Send the chat input to Claude."""
+        """Send the chat input to OpenCode."""
         chat_input = self.query_one("#chat-input", Input)
         message = chat_input.value.strip()
         if not message:
             return
 
         if self._claude_running:
-            self.notify("Claude is still running — wait or click Stop", severity="warning")
+            self.notify("OpenCode is still running - wait or click Stop", severity="warning")
             return
-
-        # Auto-create session if none exists
-        if not self._claude_session_id:
-            self._do_new_claude_session()
 
         chat_log = self.query_one("#claude-chat-log", RichLog)
         chat_log.write(f"\n[bold cyan]You:[/bold cyan] {message}")
@@ -3607,7 +3875,8 @@ class CustodianAdmin(App):
 
         # Show working indicator
         session_label = self.query_one("#session-label", Static)
-        session_label.update(f"Session: {self._claude_session_id[:12]}... [bold yellow]working...[/bold yellow]")
+        session_name = f"{self._claude_session_id[:12]}..." if self._claude_session_id else "new"
+        session_label.update(f"Session: {session_name} [bold yellow]working...[/bold yellow]")
 
         prompt = self._build_claude_prompt(message)
         self._run_claude_query(prompt)
@@ -3618,167 +3887,129 @@ class CustodianAdmin(App):
             self._do_send_claude_message()
 
     def _extract_text_from_event(self, event_data):
-        """Extract displayable text from a Claude stream-json event.
+        """Extract displayable text from an OpenCode JSON event.
 
-        Also tracks which files Claude edits/writes so we can auto-reload.
+        Also tracks which files OpenCode edits/writes so we can auto-reload.
         """
-        t = event_data.get("type", "")
-        subtype = event_data.get("subtype", "")
+        event_type = event_data.get("type", "")
+        session_id = event_data.get("sessionID")
+        part = event_data.get("part") or {}
 
-        # Streaming text delta
-        if t == "content_block_delta":
-            delta = event_data.get("delta", {})
-            delta_type = delta.get("type", "")
-            if delta_type == "text_delta":
-                return delta.get("text", "")
-            # input_json_delta for tool params — skip (noisy)
-            return ""
+        if session_id and session_id != self._claude_session_id:
+            self._claude_session_id = session_id
+            self._save_claude_session(session_id)
+            try:
+                label = self.query_one("#session-label", Static)
+                self.call_from_thread(
+                    label.update,
+                    f"Session: {session_id[:12]}... [green]ready[/green]",
+                )
+            except Exception:
+                pass
 
-        # Direct text field (assistant text chunk)
-        if t == "assistant" and subtype == "text":
-            return event_data.get("text", "")
+        if event_type == "text":
+            return part.get("text", "")
 
-        # Full message with content array
-        if t == "assistant" and "message" in event_data:
-            texts = []
-            for block in event_data["message"].get("content", []):
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        texts.append(block["text"])
-                    elif block.get("type") == "tool_use":
-                        name = block.get("name", "unknown")
-                        inp = block.get("input", {})
-                        fp = inp.get("file_path", inp.get("path", ""))
-                        if fp:
-                            self._claude_edited_files.add(fp)
-                            texts.append(f"\n[bold magenta]>>> {name}[/bold magenta] {fp}\n")
-                        else:
-                            texts.append(f"\n[bold magenta]>>> {name}[/bold magenta]\n")
-            return "\n".join(texts)
+        if event_type == "tool_use":
+            tool = part.get("tool", "unknown")
+            state = part.get("state") or {}
+            tool_input = state.get("input") or {}
 
-        # Tool use (top-level event) — Claude is calling a tool
-        if t == "assistant" and subtype == "tool_use":
-            tool = event_data.get("name", event_data.get("tool", "unknown"))
-            tool_input = event_data.get("input", {})
-            fp = tool_input.get("file_path", tool_input.get("path", ""))
-            if fp and tool in ("Edit", "Write", "NotebookEdit"):
+            fp = (
+                tool_input.get("filePath")
+                or tool_input.get("path")
+                or tool_input.get("source")
+                or tool_input.get("destination")
+                or ""
+            )
+            if fp and any(key in tool for key in ("edit", "write", "patch", "move", "delete")):
                 self._claude_edited_files.add(fp)
-            # Color by operation type
-            if tool in ("Edit", "Write", "NotebookEdit"):
-                color = "bold red"  # write ops in red
-            elif tool in ("Read", "Glob", "Grep"):
-                color = "bold blue"  # read ops in blue
-            elif tool == "Bash":
-                color = "bold yellow"  # shell ops in yellow
-            elif tool.startswith("mcp__"):
-                color = "bold cyan"  # MCP tools in cyan
-                tool = tool.replace("mcp__custodian__", "fossil:")
+
+            if any(key in tool for key in ("edit", "write", "patch", "move", "delete")):
+                color = "bold red"
+            elif tool in ("read", "glob", "grep"):
+                color = "bold blue"
+            elif tool == "bash":
+                color = "bold yellow"
+            elif tool.startswith("mcp"):
+                color = "bold cyan"
             else:
                 color = "bold magenta"
+
             if fp:
                 try:
                     fp = os.path.relpath(fp, self._workbench_path)
                 except ValueError:
                     pass
                 return f"\n[{color}]>>> {tool}[/{color}] {fp}\n"
+
             cmd = tool_input.get("command", "")
             if cmd:
                 return f"\n[{color}]>>> {tool}[/{color}] `{cmd[:100]}`\n"
-            # For MCP and other tools, show key params
+
             params = ", ".join(f"{k}={v}" for k, v in list(tool_input.items())[:3] if v)
             if params:
                 return f"\n[{color}]>>> {tool}[/{color}] ({params})\n"
             return f"\n[{color}]>>> {tool}[/{color}]\n"
 
-        # Content block start (tool_use or text)
-        if t == "content_block_start":
-            block = event_data.get("content_block", {})
-            if block.get("type") == "tool_use":
-                tool = block.get("name", "unknown")
-                return f"\n[bold magenta]>>> {tool}[/bold magenta] "
+        if event_type == "step_finish":
+            tokens = part.get("tokens") or {}
+            meta = []
+            if part.get("cost") is not None:
+                meta.append(f"${part['cost']:.4f}")
+            if tokens.get("total") is not None:
+                meta.append(f"{tokens['total']} tok")
+            if meta and part.get("reason") == "stop":
+                return f"[dim]({', '.join(meta)})[/dim]"
             return ""
 
-        # Tool result — show success/failure
-        if t == "tool_result":
-            content = event_data.get("content", "")
-            is_error = event_data.get("is_error", False)
-            if isinstance(content, list):
-                content = " ".join(
-                    c.get("text", "") for c in content if isinstance(c, dict)
-                )
-            if isinstance(content, str):
-                content = content.strip()
-                if len(content) > 500:
-                    content = content[:500] + "..."
-            if is_error:
-                return f"[bold red]ERROR:[/bold red] [red]{content}[/red]\n"
-            if content:
-                # Show first few lines of output, dimmed
-                lines = content.split("\n")
-                if len(lines) > 8:
-                    preview = "\n".join(lines[:6])
-                    return f"[dim]{preview}\n... ({len(lines)-6} more lines)[/dim]\n"
-                return f"[dim]{content}[/dim]\n"
-            return "[dim]OK[/dim]\n"
+        if event_type == "error":
+            error = event_data.get("error") or {}
+            message = error.get("data", {}).get("message") or error.get("message") or "Unknown error"
+            return f"[bold red]ERROR:[/bold red] [red]{message}[/red]"
 
         return ""
 
     @work(thread=True)
     def _run_claude_query(self, prompt):
-        """Spawn Claude CLI subprocess and stream response to chat log.
-
-        Claude runs with full tool access (Read, Edit, Write, Bash, Glob, Grep).
-        We track which files it edits and auto-reload the editor afterward.
-        """
+        """Spawn OpenCode and stream JSON response events to the chat log."""
         chat_log = self.query_one("#claude-chat-log", RichLog)
         self._claude_running = True
         self._claude_edited_files = set()
 
         env = os.environ.copy()
-        # Remove variables that could interfere with nested Claude invocation
-        for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
-            env.pop(key, None)
+        env.setdefault("OPENCODE_DISABLE_UPDATE_CHECK", "1")
 
-        # Build system prompt with fossil briefs so Claude knows the project landscape
+        # Build startup prompt with fossil briefs so OpenCode knows the project landscape
         briefs = self._get_fossil_briefs()
         system_ctx = EDITOR_SYSTEM_PROMPT + f"\nRegistered projects:\n{briefs}\n"
 
-        # Build MCP config path — use WSL-native paths when running under WSL
-        if _IS_WSL:
-            mcp_config = os.path.join(self._workbench_path, ".claude", "mcp-wsl.json")
-        else:
-            mcp_config = os.path.join(self._workbench_path, ".claude", "mcp.json")
-
+        opencode_cwd = self._editor_project_path or self._workbench_path
         cmd = [
-            "claude", "-p",
-            "--output-format", "stream-json",
-            "--session-id", self._claude_session_id,
-            "--append-system-prompt", system_ctx,
-            "--permission-mode", "acceptEdits",
+            OPENCODE_BIN,
+            "run",
+            "--format", "json",
+            "--dir", opencode_cwd,
+            "--model", OPENCODE_MODEL,
         ]
+        if self._claude_session_id:
+            cmd.extend(["--session", self._claude_session_id])
+        cmd.append(f"{system_ctx}\n\n{prompt}")
 
-        # Pass MCP config explicitly if it exists
-        if os.path.exists(mcp_config):
-            cmd.extend(["--mcp-config", mcp_config])
-
-        claude_cwd = self._editor_project_path or self._workbench_path
         try:
             proc = subprocess.Popen(
                 cmd,
-                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
-                cwd=claude_cwd,
+                cwd=opencode_cwd,
             )
             self._claude_process = proc
+            if proc.stdout is None or proc.stderr is None:
+                raise RuntimeError("OpenCode process streams were not available")
 
-            # Send prompt and close stdin
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-
-            chat_log.write("[bold yellow]Claude:[/bold yellow]")
+            chat_log.write("[bold yellow]OpenCode:[/bold yellow]")
 
             # Stream NDJSON response
             buffer = ""
@@ -3801,18 +4032,6 @@ class CustodianAdmin(App):
                         line_text, buffer = buffer.split("\n", 1)
                         if line_text.strip():
                             chat_log.write(line_text)
-
-                # Show result/completion metadata
-                if event_data.get("type") == "result":
-                    cost = event_data.get("cost_usd")
-                    duration = event_data.get("duration_ms")
-                    meta = []
-                    if cost is not None:
-                        meta.append(f"${cost:.4f}")
-                    if duration is not None:
-                        meta.append(f"{duration/1000:.1f}s")
-                    if meta:
-                        chat_log.write(f"[dim]({', '.join(meta)})[/dim]")
 
             # Flush remaining buffer
             if buffer.strip():
@@ -3851,7 +4070,7 @@ class CustodianAdmin(App):
                 self.call_from_thread(self._refresh_git_status)
 
         except FileNotFoundError:
-            chat_log.write("[red]Claude CLI not found. Is 'claude' on PATH?[/red]")
+            chat_log.write(f"[red]OpenCode CLI not found at {OPENCODE_BIN}[/red]")
         except Exception as e:
             chat_log.write(f"[red]Error: {type(e).__name__}: {e}[/red]")
         finally:
@@ -3860,15 +4079,16 @@ class CustodianAdmin(App):
             # Clear "working" indicator
             try:
                 label = self.query_one("#session-label", Static)
+                session_name = f"{self._claude_session_id[:12]}..." if self._claude_session_id else "new"
                 self.call_from_thread(
                     label.update,
-                    f"Session: {self._claude_session_id[:12]}... [green]ready[/green]"
+                    f"Session: {session_name} [green]ready[/green]"
                 )
             except Exception:
                 pass
 
     def _do_stop_claude(self):
-        """Terminate the running Claude process."""
+        """Terminate the running OpenCode process."""
         if self._claude_process and self._claude_running:
             self._claude_running = False
             try:
@@ -3877,7 +4097,7 @@ class CustodianAdmin(App):
                 pass
             chat_log = self.query_one("#claude-chat-log", RichLog)
             chat_log.write("[yellow]Stopped.[/yellow]")
-            self.notify("Claude stopped")
+            self.notify("OpenCode stopped")
         else:
             self.notify("Nothing running", severity="warning")
 
@@ -4017,6 +4237,230 @@ class CustodianAdmin(App):
         except Exception as e:
             self.notify(f"Error: {e}", severity="error")
 
+    # ── Ticker Tab ────────────────────────────────────────────────────
+
+    def _refresh_ticker_tab(self):
+        """Refresh the Ticker tab — segments table, settings inputs, preview."""
+        try:
+            table = self.query_one("#ticker-segments-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("Order", "Key", "Label", "Enabled")
+            table.cursor_type = "row"
+
+            conn = get_db()
+            # Ensure table has new columns
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(ticker_config)").fetchall()]
+            if "display_order" not in cols:
+                conn.execute("ALTER TABLE ticker_config ADD COLUMN display_order INTEGER DEFAULT 0")
+                conn.execute("ALTER TABLE ticker_config ADD COLUMN label TEXT")
+                conn.execute("ALTER TABLE ticker_config ADD COLUMN format TEXT")
+                conn.commit()
+
+            rows = conn.execute(
+                "SELECT key, enabled, display_order, label FROM ticker_config ORDER BY display_order, key"
+            ).fetchall()
+
+            # Load settings
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ticker_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            settings_rows = conn.execute("SELECT key, value FROM ticker_settings").fetchall()
+            conn.close()
+
+            settings = {}
+            for r in settings_rows:
+                settings[r["key"]] = r["value"]
+
+            for r in rows:
+                table.add_row(
+                    str(r["display_order"] or 0),
+                    r["key"],
+                    r["label"] or r["key"].title(),
+                    "Yes" if r["enabled"] else "No",
+                )
+
+            # Populate settings inputs
+            try:
+                self.query_one("#ticker-speed", Input).value = settings.get("scroll_speed", "50")
+                self.query_one("#ticker-opacity", Input).value = settings.get("opacity", "85")
+                self.query_one("#ticker-height", Input).value = settings.get("bar_height", "28")
+                self.query_one("#ticker-poll", Input).value = settings.get("poll_interval", "3")
+                pos = settings.get("position", "top")
+                self.query_one("#ticker-position", Select).value = pos
+            except Exception:
+                pass
+
+            # Update preview
+            enabled = [r["label"] or r["key"].title() for r in rows if r["enabled"]]
+            preview_text = " | ".join(enabled) if enabled else "(all segments disabled)"
+            try:
+                self.query_one("#ticker-preview", Static).update(
+                    f"[dim]Enabled segments:[/dim] {preview_text}"
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _move_ticker_segment(self, direction: int):
+        """Move the selected segment up or down in display order."""
+        table = self.query_one("#ticker-segments-table", DataTable)
+        row_idx = table.cursor_row
+        if row_idx is None:
+            self.notify("Select a segment first", severity="warning")
+            return
+        try:
+            row_data = table.get_row_at(row_idx)
+            key = row_data[1]
+        except Exception:
+            self.notify("Select a segment first", severity="warning")
+            return
+
+        try:
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT key, display_order FROM ticker_config ORDER BY display_order, key"
+            ).fetchall()
+            keys = [r["key"] for r in rows]
+            idx = keys.index(key) if key in keys else -1
+            new_idx = idx + direction
+            if idx < 0 or new_idx < 0 or new_idx >= len(keys):
+                conn.close()
+                return
+            # Swap display_order values
+            other_key = keys[new_idx]
+            conn.execute(
+                "UPDATE ticker_config SET display_order = ? WHERE key = ?",
+                (new_idx, key),
+            )
+            conn.execute(
+                "UPDATE ticker_config SET display_order = ? WHERE key = ?",
+                (idx, other_key),
+            )
+            conn.commit()
+            conn.close()
+            self._refresh_ticker_tab()
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
+    def _toggle_ticker_segment(self):
+        """Toggle the enabled state of the selected segment."""
+        table = self.query_one("#ticker-segments-table", DataTable)
+        row_idx = table.cursor_row
+        if row_idx is None:
+            self.notify("Select a segment first", severity="warning")
+            return
+        try:
+            row_data = table.get_row_at(row_idx)
+            key = row_data[1]
+        except Exception:
+            self.notify("Select a segment first", severity="warning")
+            return
+
+        try:
+            conn = get_db()
+            row = conn.execute(
+                "SELECT enabled FROM ticker_config WHERE key = ?", (key,)
+            ).fetchone()
+            if row:
+                new_val = 0 if row["enabled"] else 1
+                conn.execute(
+                    "UPDATE ticker_config SET enabled = ? WHERE key = ?", (new_val, key)
+                )
+                conn.commit()
+            conn.close()
+            self._refresh_ticker_tab()
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
+    def _save_ticker_settings(self):
+        """Save overlay settings from the Ticker tab inputs to DB."""
+        try:
+            settings = {
+                "scroll_speed": self.query_one("#ticker-speed", Input).value,
+                "opacity": self.query_one("#ticker-opacity", Input).value,
+                "bar_height": self.query_one("#ticker-height", Input).value,
+                "poll_interval": self.query_one("#ticker-poll", Input).value,
+                "position": self.query_one("#ticker-position", Select).value or "top",
+            }
+            conn = get_db()
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ticker_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            for k, v in settings.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO ticker_settings (key, value) VALUES (?, ?)",
+                    (k, str(v)),
+                )
+            conn.commit()
+            conn.close()
+            self.notify("Ticker settings saved")
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
+    def _launch_ticker_overlay(self):
+        """Launch the ticker overlay process."""
+        if self._ticker_overlay_proc and self._ticker_overlay_proc.poll() is None:
+            self.notify("Overlay already running", severity="warning")
+            return
+        try:
+            overlay_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "ticker_overlay.py"
+            )
+            is_wsl = os.path.exists("/proc/version") and "microsoft" in open("/proc/version").read().lower()
+            if is_wsl:
+                # Convert Linux path to Windows path for pythonw.exe
+                win_path = subprocess.check_output(
+                    ["wslpath", "-w", overlay_path], text=True
+                ).strip()
+                self._ticker_overlay_proc = subprocess.Popen(
+                    ["pythonw.exe", win_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                for exe in ["pythonw.exe", "python3", "python"]:
+                    try:
+                        self._ticker_overlay_proc = subprocess.Popen(
+                            [exe, overlay_path],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        break
+                    except FileNotFoundError:
+                        continue
+                else:
+                    self.notify("Could not find Python executable", severity="error")
+                    return
+            self.notify(f"Overlay launched (PID {self._ticker_overlay_proc.pid})")
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
+    def _stop_ticker_overlay(self):
+        """Stop the ticker overlay process."""
+        if self._ticker_overlay_proc and self._ticker_overlay_proc.poll() is None:
+            self._ticker_overlay_proc.terminate()
+            self._ticker_overlay_proc = None
+        # Also kill any orphaned Windows pythonw instances running the overlay
+        is_wsl = os.path.exists("/proc/version") and "microsoft" in open("/proc/version").read().lower()
+        if is_wsl:
+            try:
+                subprocess.run(
+                    ["powershell.exe", "-Command",
+                     "Get-Process pythonw -ErrorAction SilentlyContinue | "
+                     "Where-Object { $_.CommandLine -like '*ticker_overlay*' } | "
+                     "Stop-Process -Force"],
+                    capture_output=True, timeout=5,
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                subprocess.run(["pkill", "-f", "ticker_overlay.py"], capture_output=True, timeout=3)
+            except Exception:
+                pass
+        self.notify("Overlay stopped")
+
     # ── Actions ───────────────────────────────────────────────────────
 
     def action_refresh(self) -> None:
@@ -4030,6 +4474,7 @@ class CustodianAdmin(App):
         self._refresh_agents_tab()
         self._refresh_builds_tab()
         self._refresh_devices_tab()
+        self._refresh_ticker_tab()
         self.notify("Refreshed")
 
     def action_focus_tab(self, tab_name: str) -> None:

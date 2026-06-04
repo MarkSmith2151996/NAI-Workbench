@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# roadmap-session — Open the Custodian roadmap markdown file in a terminal editor
+set -euo pipefail
+
+ROADMAP_FILE="/mnt/c/Users/Big A/custodian-shared/nai-workbench/roadmap/roadmap.md"
+
+if [ ! -f "$ROADMAP_FILE" ]; then
+  printf 'Roadmap file not found: %s\n' "$ROADMAP_FILE" >&2
+  exit 1
+fi
+
+if [ -n "${EDITOR:-}" ]; then
+  EDITOR_BIN="$EDITOR"
+elif command -v micro >/dev/null 2>&1; then
+  EDITOR_BIN="micro"
+elif command -v nano >/dev/null 2>&1; then
+  EDITOR_BIN="nano"
+elif command -v vim >/dev/null 2>&1; then
+  EDITOR_BIN="vim"
+elif command -v vi >/dev/null 2>&1; then
+  EDITOR_BIN="vi"
+else
+  printf 'No terminal editor found. Set $EDITOR to edit %s\n' "$ROADMAP_FILE" >&2
+  exit 1
+fi
+
+exec "$EDITOR_BIN" "$ROADMAP_FILE"

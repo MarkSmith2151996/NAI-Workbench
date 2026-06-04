@@ -22,7 +22,7 @@ check() {
   fi
 }
 
-check "Excalidraw (Whiteboard)" 9081
+check "Penpot (Wireframes)" 9001
 check "Komodo (Dashboard)" 9090
 check "code-server (Editor)" 9091
 

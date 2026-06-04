@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Launch the NAI Workbench ticker overlay.
+# Detects WSL vs native and uses the right Python executable.
+#
+# Usage:
+#   launch-ticker          — Start the overlay
+#   launch-ticker --kill   — Kill any running overlay
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+OVERLAY="$SCRIPT_DIR/custodian/ticker_overlay.py"
+
+if [ "${1:-}" = "--kill" ]; then
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        powershell.exe -Command "Get-Process pythonw -ErrorAction SilentlyContinue | Where-Object { \$_.CommandLine -like '*ticker_overlay*' } | Stop-Process -Force" 2>/dev/null
+    else
+        pkill -f "ticker_overlay.py" 2>/dev/null
+    fi
+    echo "Ticker overlay stopped"
+    exit 0
+fi
+
+if [ ! -f "$OVERLAY" ]; then
+    echo "Error: ticker_overlay.py not found at $OVERLAY" >&2
+    exit 1
+fi
+
+# Kill any existing instance first
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    powershell.exe -Command "Get-Process pythonw -ErrorAction SilentlyContinue | Where-Object { \$_.CommandLine -like '*ticker_overlay*' } | Stop-Process -Force" 2>/dev/null || true
+fi
+
+# In WSL, use pythonw.exe on the Windows side (no console window, native tkinter)
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    WIN_PATH="$(wslpath -w "$OVERLAY")"
+    pythonw.exe "$WIN_PATH" &
+    disown
+    echo "Ticker overlay launched (Windows pythonw.exe, PID $!)"
+else
+    python3 "$OVERLAY" &
+    disown
+    echo "Ticker overlay launched (PID $!)"
+fi

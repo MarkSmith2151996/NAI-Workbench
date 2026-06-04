@@ -1,0 +1,43 @@
+0 verbose cli /usr/bin/node /usr/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@10.9.4
+2 info using node@v22.22.0
+3 silly config load:file:/usr/lib/node_modules/npm/npmrc
+4 silly config load:file:/mnt/c/Users/Big A/.npmrc
+5 silly config load:file:/home/dev/.npmrc
+6 silly config load:file:/usr/etc/npmrc
+7 verbose title npm exec @anthropic-ai/mcp-playwright
+8 verbose argv "exec" "--yes" "--" "@anthropic-ai/mcp-playwright"
+9 verbose logfile logs-max:10 dir:/mnt/c/Users/Big A/NAI-Workbench/D:\npm-cache/_logs/2026-03-24T13_13_52_177Z-
+10 verbose logfile /mnt/c/Users/Big A/NAI-Workbench/D:\npm-cache/_logs/2026-03-24T13_13_52_177Z-debug-0.log
+11 silly logfile start cleaning logs, removing 4 files
+12 silly packumentCache heap:4345298944 maxSize:1086324736 maxEntrySize:543162368
+13 silly logfile done cleaning log files
+14 http fetch GET 404 https://registry.npmjs.org/@anthropic-ai%2fmcp-playwright 223ms (cache skip)
+15 http fetch GET 404 https://registry.npmjs.org/@anthropic-ai%2fmcp-playwright 111ms (cache skip)
+16 verbose stack HttpErrorGeneral: 404 Not Found - GET https://registry.npmjs.org/@anthropic-ai%2fmcp-playwright - Not found
+16 verbose stack     at /usr/lib/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:103:15
+16 verbose stack     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+16 verbose stack     at async RegistryFetcher.packument (/usr/lib/node_modules/npm/node_modules/pacote/lib/registry.js:90:19)
+16 verbose stack     at async RegistryFetcher.manifest (/usr/lib/node_modules/npm/node_modules/pacote/lib/registry.js:128:23)
+16 verbose stack     at async getManifest (/usr/lib/node_modules/npm/node_modules/libnpmexec/lib/index.js:27:22)
+16 verbose stack     at async missingFromTree (/usr/lib/node_modules/npm/node_modules/libnpmexec/lib/index.js:60:22)
+16 verbose stack     at async /usr/lib/node_modules/npm/node_modules/libnpmexec/lib/index.js:182:32
+16 verbose stack     at async Promise.all (index 0)
+16 verbose stack     at async exec (/usr/lib/node_modules/npm/node_modules/libnpmexec/lib/index.js:180:3)
+16 verbose stack     at async Npm.exec (/usr/lib/node_modules/npm/lib/npm.js:207:9)
+17 verbose statusCode 404
+18 verbose pkgid @anthropic-ai/mcp-playwright@*
+19 error code E404
+20 error 404 Not Found - GET https://registry.npmjs.org/@anthropic-ai%2fmcp-playwright - Not found
+21 error 404
+22 error 404  '@anthropic-ai/mcp-playwright@*' is not in this registry.
+23 error 404
+24 error 404 Note that you can also install from a
+25 error 404 tarball, folder, http url, or git url.
+26 verbose cwd /mnt/c/Users/Big A/NAI-Workbench
+27 verbose os Linux 5.15.167.4-microsoft-standard-WSL2
+28 verbose node v22.22.0
+29 verbose npm  v10.9.4
+30 verbose exit 1
+31 verbose code 1
+32 error A complete log of this run can be found in: /mnt/c/Users/Big A/NAI-Workbench/D:\npm-cache/_logs/2026-03-24T13_13_52_177Z-debug-0.log

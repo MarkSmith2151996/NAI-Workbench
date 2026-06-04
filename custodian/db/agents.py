@@ -196,11 +196,31 @@ def _resolve_agent(conn, identifier):
     ).fetchone()
     return row
 
+
+def _ensure_agent_workstation_column(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+    if "workstation" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN workstation TEXT")
+        conn.commit()
+
+
+def _validate_workstation(conn, name):
+    workstation = str(name or "").strip() or None
+    if not workstation:
+        return None, None
+    from custodian.services.workstations import get_spec
+
+    spec = get_spec(workstation)
+    if not spec or spec.get("status") != "active":
+        return None, f"Error: workstation '{workstation}' not found or not active."
+    return workstation, None
+
 async def handle_agent_list(args):
     """List all agents."""
     status = args.get("status", "active")
 
     with db_connection() as conn:
+        _ensure_agent_workstation_column(conn)
         rows = conn.execute(
             """SELECT a.*, p.name as project_name,
                       (SELECT COUNT(*) FROM agent_runs ar WHERE ar.agent_id = a.id) as run_count,
@@ -225,6 +245,8 @@ async def handle_agent_list(args):
         )
         if r["spec_path"]:
             lines.append(f"      spec_path: {r['spec_path']}")
+        if "workstation" in r.keys() and r["workstation"]:
+            lines.append(f"      workstation: {r['workstation']}")
         if desc:
             lines.append(f"      {desc}")
     return [TextContent(type="text", text="\n".join(lines))]
@@ -238,6 +260,7 @@ async def handle_agent_create(args):
     project_name = str(args.get("project") or "").strip()
     max_turns = args.get("max_turns", 20)
     spec_path = str(args.get("spec_path") or "").strip() or None
+    workstation = str(args.get("workstation") or "").strip() or None
     log_query("agent_create", project_name, args)
 
     if not name:
@@ -247,6 +270,7 @@ async def handle_agent_create(args):
         return [TextContent(type="text", text=model_error)]
 
     with db_connection() as conn:
+        _ensure_agent_workstation_column(conn)
         # Check name uniqueness
         existing = conn.execute("SELECT id FROM agents WHERE name = ?", (name,)).fetchone()
         if existing:
@@ -269,6 +293,11 @@ async def handle_agent_create(args):
             except Exception as exc:
                 return [TextContent(type="text", text=f"Error loading agent spec: {exc}")]
             system_prompt = str(spec.get("task") or "").strip()
+            workstation = workstation or str(spec.get("workstation") or "").strip() or None
+
+        workstation, workstation_error = _validate_workstation(conn, workstation)
+        if workstation_error:
+            return [TextContent(type="text", text=workstation_error)]
 
         if not system_prompt:
             return [TextContent(type="text", text="Error: 'system_prompt' is required unless 'spec_path' provides a YAML task.")]
@@ -276,15 +305,15 @@ async def handle_agent_create(args):
         now = datetime.now().isoformat()
         cursor = conn.execute(
             """INSERT INTO agents (name, description, system_prompt, model,
-               project_id, max_turns, spec_path, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, description, system_prompt, model, project_id, max_turns, spec_path, now),
+               project_id, max_turns, spec_path, workstation, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, description, system_prompt, model, project_id, max_turns, spec_path, workstation, now),
         )
         conn.commit()
         agent_id = cursor.lastrowid
 
     return [TextContent(
         type="text",
-        text=f"Agent '{name}' created (ID {agent_id}, model: {model}, max_turns: {max_turns}).",
+        text=f"Agent '{name}' created (ID {agent_id}, model: {model}, max_turns: {max_turns}, workstation: {workstation or 'none'}).",
     )]
 
 async def handle_agent_update(args):
@@ -296,6 +325,7 @@ async def handle_agent_update(args):
         return [TextContent(type="text", text="Error: 'agent' (name or ID) is required.")]
 
     with db_connection() as conn:
+        _ensure_agent_workstation_column(conn)
         agent = _resolve_agent(conn, identifier)
         if not agent:
             return [TextContent(type="text", text=f"Agent '{identifier}' not found.")]
@@ -334,6 +364,16 @@ async def handle_agent_update(args):
         if "spec_path" in args:
             updates.append("spec_path = ?")
             params.append(args["spec_path"].strip() if args["spec_path"] else None)
+        if "workstation" in args:
+            if args["workstation"] == "":
+                updates.append("workstation = ?")
+                params.append(None)
+            else:
+                workstation, workstation_error = _validate_workstation(conn, args["workstation"])
+                if workstation_error:
+                    return [TextContent(type="text", text=workstation_error)]
+                updates.append("workstation = ?")
+                params.append(workstation)
 
         if not updates:
             return [TextContent(type="text", text="Nothing to update — pass at least one field to change.")]
@@ -357,6 +397,7 @@ async def handle_get_agent_spec(args):
         return [TextContent(type="text", text="Error: 'name' is required.")]
 
     with db_connection() as conn:
+        _ensure_agent_workstation_column(conn)
         agent = _resolve_agent(conn, identifier)
         if not agent:
             return [TextContent(type="text", text=f"Agent '{identifier}' not found.")]
@@ -435,6 +476,33 @@ async def handle_agent_run(args):
 
     prompt_text = user_prompt or agent.get("description") or f"Execute your purpose as {agent['name']}"
     fallback_warning = None
+
+    if agent.get("workstation"):
+        try:
+            from custodian.services.workstations import dispatch_agent
+
+            dispatch_task = user_prompt or (json.dumps(input_payload, sort_keys=True) if input_payload else prompt_text)
+            result = dispatch_agent(agent["name"], dispatch_task, agent_run_id=run_id)
+            with db_connection() as conn:
+                conn.execute(
+                    """UPDATE agent_runs SET status='completed', output=?,
+                       finished_at=datetime('now') WHERE id=?""",
+                    (json.dumps(result), run_id),
+                )
+                conn.commit()
+            return [TextContent(
+                type="text",
+                text=f"Agent '{agent['name']}' completed via workstation '{agent['workstation']}' (run #{run_id}).\n\n{json.dumps(result, indent=2)}",
+            )]
+        except Exception as e:
+            with db_connection() as conn:
+                conn.execute(
+                    """UPDATE agent_runs SET status='failed', error=?,
+                       finished_at=datetime('now') WHERE id=?""",
+                    (str(e), run_id),
+                )
+                conn.commit()
+            return [TextContent(type="text", text=f"Agent '{agent['name']}' failed via workstation (run #{run_id}).\nError: {e}")]
 
     if is_yaml_agent:
         try:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -28,16 +28,17 @@ class LlmAgentSpec(BaseModel):
     mode: Literal["operational", "development"] = "operational"
     project: str
     task: str
-    tools: list[str] = Field(default_factory=list)
+    tools: list[str | dict[str, Any]] = Field(default_factory=list)
     toolbox: list[str] = Field(default_factory=list)
     output: str
     model: str
     guidance: str | None = None
     runtime: RuntimeConfig | None = None
+    workstation: str | None = None
 
     @model_validator(mode="after")
     def validate_tool_sources(self) -> "LlmAgentSpec":
-        if not self.tools and not self.toolbox:
+        if not self.tools and not self.toolbox and not self.workstation:
             raise ValueError("At least one of 'tools' or 'toolbox' must be non-empty")
         return self
 

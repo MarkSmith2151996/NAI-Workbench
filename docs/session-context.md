@@ -48,13 +48,13 @@ NAI Workbench is a persistent dev environment running on a Windows PC (WSL2 + Do
 
 ### Network
 - PC Tailscale: 100.95.20.98
-- Laptop Tailscale: 100.79.63.10 (lamanna-arch)
+- Mac Tailscale: 100.82.234.100 (anthonys-macbook-pro)
 - WSL NAT IP: 172.21.37.202 (may change)
 - Windows Firewall: "NAI Workbench" rule allows 2222,9001,9090,9091
 - Port proxy: persistent netsh rules
 
 ### Laptop Access
-- Wave Terminal installed on Arch laptop with `--no-sandbox` flag
+- Wave Terminal installed on Mac
 - All 8 widgets configured: 5 SSH terminal + 3 web
 - SSH terminals use `ssh -t` commands (not Wave SSH client)
 - Web widgets (Penpot, Komodo, VS Code) load via Tailscale IP directly

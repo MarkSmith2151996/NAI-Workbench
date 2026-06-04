@@ -1,0 +1,18 @@
+0 verbose cli /usr/bin/node /usr/bin/npm
+1 info using npm@10.9.4
+2 info using node@v22.22.0
+3 silly config load:file:/usr/lib/node_modules/npm/npmrc
+4 silly config load:file:/mnt/c/Users/Big A/.npmrc
+5 silly config load:file:/home/dev/.npmrc
+6 silly config load:file:/usr/etc/npmrc
+7 verbose title npm config get prefix
+8 verbose argv "config" "get" "prefix"
+9 verbose logfile logs-max:10 dir:/mnt/c/Users/Big A/NAI-Workbench/D:\npm-cache/_logs/2026-03-24T13_13_52_284Z-
+10 verbose logfile /mnt/c/Users/Big A/NAI-Workbench/D:\npm-cache/_logs/2026-03-24T13_13_52_284Z-debug-0.log
+11 silly logfile start cleaning logs, removing 5 files
+12 verbose cwd /mnt/c/Users/Big A/NAI-Workbench
+13 verbose os Linux 5.15.167.4-microsoft-standard-WSL2
+14 verbose node v22.22.0
+15 verbose npm  v10.9.4
+16 verbose exit 0
+17 info ok

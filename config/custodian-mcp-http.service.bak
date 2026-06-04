@@ -1,0 +1,21 @@
+# Token is embedded at install time by bin/install-custodian-mcp-http.
+[Unit]
+Description=NAI Workbench Custodian MCP HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__WORKING_DIRECTORY__
+ExecStart=__PYTHON__ __SCRIPT__
+Environment=CUSTODIAN_MCP_TOKEN=__TOKEN__
+Environment=CUSTODIAN_MCP_BIND=127.0.0.1
+Environment=CUSTODIAN_MCP_PORT=8223
+Environment=LAPTOP_BRIDGE_URL=http://100.82.234.100:8222
+Environment=LAPTOP_BRIDGE_TOKEN=PLACEHOLDER_TOKEN_FROM_MAC
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

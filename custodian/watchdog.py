@@ -29,6 +29,9 @@ import time
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custodian.db")
 HEALTH_FILE = "/tmp/watchdog-health.json"
 CYCLE_INTERVAL = 10  # seconds
+BOX_TOOL_PORT_MIN = 9100
+BOX_TOOL_PORT_MAX = 9199
+BOX_TOOL_SERVER_CONTAINER_PATH = "/opt/box-tools/server.py"
 
 # Recovery counters (reset on process restart)
 _sshd_recoveries = 0
@@ -166,10 +169,172 @@ def check_wsl_ip():
     return "unknown"
 
 
-# --- Stale sandbox cleanup (every 2nd cycle) ---
+# --- Project box reconciliation (every 2nd cycle) ---
 
-def check_stale_sandboxes():
-    """Find alpha_builds marked 'running' where the container is dead."""
+def _pick_box_image(project_name, project_path, stack=""):
+    """Match the runtime image selection for best-effort watchdog provisioning."""
+    devcontainer_path = os.path.join(project_path, ".devcontainer")
+    if os.path.isdir(devcontainer_path):
+        dockerfile = os.path.join(devcontainer_path, "Dockerfile")
+        if os.path.isfile(dockerfile):
+            image_name = f"alpha-{project_name}:latest"
+            subprocess.run(
+                ["docker", "build", "-t", image_name, "-f", dockerfile, project_path],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            return image_name
+
+    check = subprocess.run(
+        ["docker", "image", "inspect", "nai-sandbox:latest"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if check.returncode == 0:
+        return "nai-sandbox:latest"
+
+
+def _allocate_tool_server_port(conn, project_id):
+    existing = conn.execute(
+        "SELECT tool_server_port FROM project_boxes WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()
+    if existing and existing[0]:
+        return int(existing[0])
+
+    used = {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT tool_server_port FROM project_boxes WHERE tool_server_port IS NOT NULL"
+        ).fetchall()
+    }
+    for port in range(BOX_TOOL_PORT_MIN, BOX_TOOL_PORT_MAX + 1):
+        if port not in used:
+            return port
+    raise RuntimeError("No available tool server ports in range 9100-9199")
+
+
+def _copy_and_start_box_tool_server(container_name, port):
+    source_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "box_tool_server.py")
+    subprocess.run(
+        ["docker", "exec", container_name, "mkdir", "-p", "/opt/box-tools"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    subprocess.run(
+        ["docker", "cp", source_path, f"{container_name}:{BOX_TOOL_SERVER_CONTAINER_PATH}"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+
+    has_tools = subprocess.run(
+        ["docker", "exec", container_name, "test", "-d", "/workspace/tools"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if has_tools.returncode != 0:
+        return
+
+    subprocess.run(
+        ["docker", "exec", container_name, "sh", "-c", f"pkill -f '{BOX_TOOL_SERVER_CONTAINER_PATH}' >/dev/null 2>&1 || true"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    subprocess.run(
+        [
+            "docker", "exec", "-d",
+            "-e", f"BOX_TOOL_PORT={int(port)}",
+            container_name,
+            "python3", BOX_TOOL_SERVER_CONTAINER_PATH,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    if "Python" in stack:
+        return "python:3.12"
+    if any(s in stack for s in ("Node", "React", "Next", "Electron")):
+        return "node:22"
+    return "python:3.12"
+
+
+def _provision_project_box(conn, project_row):
+    """Ensure a project has a persistent Docker box and DB row."""
+    project_path = project_row["path"]
+    if not os.path.isdir(project_path):
+        return False
+
+    container_name = f"alpha-{project_row['name']}"
+    tool_server_port = _allocate_tool_server_port(conn, project_row["id"])
+    inspect = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Config.Image}}|{{.State.Running}}", container_name],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    if inspect.returncode == 0:
+        image_name, running = (inspect.stdout.strip().split("|", 1) + [""])[:2]
+        if running.strip().lower() != "true":
+            start = subprocess.run(
+                ["docker", "start", container_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if start.returncode != 0:
+                raise RuntimeError((start.stderr or start.stdout or "docker start failed").strip())
+    else:
+        image_name = _pick_box_image(project_row["name"], project_path, project_row["stack"] or "")
+        run = subprocess.run(
+            [
+                "docker", "run", "-d", "--network", "host", "--name", container_name,
+                "-v", f"{project_path}:/workspace", "-w", "/workspace",
+                "--restart", "unless-stopped",
+                image_name, "sleep", "infinity",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if run.returncode != 0:
+            raise RuntimeError((run.stderr or run.stdout or "docker run failed").strip())
+
+    _copy_and_start_box_tool_server(container_name, tool_server_port)
+
+    conn.execute(
+        """
+        INSERT INTO project_boxes (
+            project_id, container_name, image, status, env_vars, ports, tool_server_port,
+            restart_policy, error_message, created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'running', '{}', '{}', ?, 'unless-stopped', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(project_id) DO UPDATE SET
+            container_name = excluded.container_name,
+            image = excluded.image,
+            status = 'running',
+            tool_server_port = excluded.tool_server_port,
+            restart_policy = excluded.restart_policy,
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (project_row["id"], container_name, image_name, tool_server_port),
+    )
+    conn.commit()
+    return True
+
+
+def reconcile_boxes():
+    """Keep project boxes aligned with Docker and enforce always-on runtimes."""
     global _sandbox_corrections
     corrected = 0
 
@@ -177,7 +342,7 @@ def check_stale_sandboxes():
         conn = sqlite3.connect(DB_PATH, timeout=3)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, container_name FROM alpha_builds WHERE status = 'running'"
+            "SELECT * FROM project_boxes"
         ).fetchall()
 
         for row in rows:
@@ -191,18 +356,59 @@ def check_stale_sandboxes():
             except Exception:
                 alive = False
 
-            if not alive:
+            if row["status"] == "running" and not alive:
                 conn.execute(
-                    "UPDATE alpha_builds SET status = 'stopped' WHERE id = ?",
+                    "UPDATE project_boxes SET status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (row["id"],),
                 )
                 conn.commit()
                 corrected += 1
-                _log(f"Marked stale sandbox stopped: {container} (build_id={row['id']})")
+                _log(f"Marked stopped project box: {container} (box_id={row['id']})")
+            elif row["status"] == "stopped" and alive:
+                conn.execute(
+                    "UPDATE project_boxes SET status = 'running', error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (row["id"],),
+                )
+                conn.commit()
+                corrected += 1
+                _log(f"Adopted already-running project box: {container} (box_id={row['id']})")
+            elif row["status"] == "stopped" and not alive:
+                start = subprocess.run(
+                    ["docker", "start", container],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if start.returncode == 0:
+                    _copy_and_start_box_tool_server(container, row["tool_server_port"] or _allocate_tool_server_port(conn, row["project_id"]))
+                    conn.execute(
+                        "UPDATE project_boxes SET status = 'running', error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (row["id"],),
+                    )
+                    conn.commit()
+                    corrected += 1
+                    _log(f"Restarted project box: {container} (box_id={row['id']})")
+
+        projects = conn.execute(
+            "SELECT id, name, path, stack FROM projects WHERE status = 'active'"
+        ).fetchall()
+        for project in projects:
+            existing = conn.execute(
+                "SELECT id FROM project_boxes WHERE project_id = ?",
+                (project["id"],),
+            ).fetchone()
+            if existing:
+                continue
+            try:
+                if _provision_project_box(conn, project):
+                    corrected += 1
+                    _log(f"Provisioned missing project box: alpha-{project['name']}")
+            except Exception as e:
+                _log(f"Project box provision error for {project['name']}: {e}")
 
         conn.close()
     except Exception as e:
-        _log(f"Stale sandbox check error: {e}")
+        _log(f"Project box reconcile error: {e}")
 
     _sandbox_corrections += corrected
     return corrected
@@ -268,9 +474,9 @@ def run():
             if cycle % 6 == 0:
                 wsl_ip = check_wsl_ip()
 
-            # Stale sandboxes: every 2nd cycle
+            # Project boxes: every 2nd cycle
             if cycle % 2 == 0:
-                check_stale_sandboxes()
+                reconcile_boxes()
 
             # Write health
             write_health(sshd_status, docker_status, wsl_ip)

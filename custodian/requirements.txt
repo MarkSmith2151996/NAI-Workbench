@@ -1,5 +1,10 @@
 # Custodian System Dependencies
 mcp>=1.0.0
+fastapi>=0.111.0
+starlette>=0.36.0
+uvicorn>=0.27.0
+bcrypt>=4.1.0
+PyYAML>=6.0
 tree-sitter==0.21.3
 tree-sitter-languages>=1.10.0
 textual>=0.50.0

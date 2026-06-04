@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "repomix": {
+      "command": "npx",
+      "args": ["-y", "repomix", "--mcp"]
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/dev/projects"]
+    },
+    "custodian": {
+      "command": "python",
+      "args": ["custodian/mcp_server.py"],
+      "cwd": "C:\\Users\\Big A\\NAI-Workbench",
+      "env": {
+        "PYTHONPATH": "C:\\Users\\Big A\\NAI-Workbench\\custodian",
+        "LAPTOP_BRIDGE_URL": "http://100.82.234.100:8222",
+        "LAPTOP_BRIDGE_TOKEN": "PLACEHOLDER_TOKEN_FROM_MAC"
+      }
+    }
+  }
+}

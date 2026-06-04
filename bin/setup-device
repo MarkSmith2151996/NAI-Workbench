@@ -35,8 +35,20 @@ echo ""
 # ── 1. Detect OS ──────────────────────────────────────────────
 echo -e "${CYAN}[1/8] Detecting OS${NC}"
 OS="unknown"
+IS_CHROMEOS=false
 if [[ "$(uname -s)" == "Linux" ]]; then
-    if [ -f /etc/os-release ]; then
+    # ChromeOS/Crostini detection
+    if [ -f /dev/.cros_milestone ] || [ -d /opt/google/cros-containers ]; then
+        IS_CHROMEOS=true
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS="$ID"
+        else
+            OS="debian"
+        fi
+        CROS_VER=$(cat /dev/.cros_milestone 2>/dev/null || echo "unknown")
+        ok "ChromeOS (Crostini) — $OS, milestone $CROS_VER"
+    elif [ -f /etc/os-release ]; then
         . /etc/os-release
         OS="$ID"
         ok "Linux — $PRETTY_NAME"
@@ -64,18 +76,31 @@ if command -v tailscale &>/dev/null; then
         info "Run: sudo tailscale up"
     fi
 else
-    fail "Tailscale not installed"
-    echo ""
-    echo -e "${YELLOW}Install Tailscale first:${NC}"
-    case "$OS" in
-        arch)   echo "  sudo pacman -S tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up" ;;
-        ubuntu|debian) echo "  curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up" ;;
-        fedora) echo "  sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up" ;;
-        macos)  echo "  brew install tailscale  (or install from App Store)" ;;
-        *)      echo "  See: https://tailscale.com/download" ;;
-    esac
-    echo ""
-    exit 1
+    # On ChromeOS, Tailscale runs as an Android app — no CLI available.
+    # Test connectivity directly instead of requiring the CLI.
+    if $IS_CHROMEOS; then
+        warn "Tailscale CLI not found (normal on ChromeOS — runs as Android app)"
+        info "Testing PC reachability directly..."
+        if ping -c 1 -W 3 "${NAI_PC_IP:-100.95.20.98}" &>/dev/null; then
+            ok "PC reachable via Tailscale VPN"
+        else
+            fail "Cannot reach PC — ensure Tailscale Android app is connected"
+            exit 1
+        fi
+    else
+        fail "Tailscale not installed"
+        echo ""
+        echo -e "${YELLOW}Install Tailscale first:${NC}"
+        case "$OS" in
+            arch)   echo "  sudo pacman -S tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up" ;;
+            ubuntu|debian) echo "  curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up" ;;
+            fedora) echo "  sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up" ;;
+            macos)  echo "  brew install tailscale  (or install from App Store)" ;;
+            *)      echo "  See: https://tailscale.com/download" ;;
+        esac
+        echo ""
+        exit 1
+    fi
 fi
 echo ""
 
@@ -98,12 +123,19 @@ else
     exit 1
 fi
 
-if curl -sf --connect-timeout 5 "http://${PC_IP}:${API_PORT}/api/health" >/dev/null 2>&1; then
-    ok "Workbench API reachable (port $API_PORT)"
+# Use curl if available, fall back to /dev/tcp for health check
+if command -v curl &>/dev/null; then
+    if curl -sf --connect-timeout 5 "http://${PC_IP}:${API_PORT}/api/health" >/dev/null 2>&1; then
+        ok "Workbench API reachable (port $API_PORT)"
+    else
+        warn "Workbench API not reachable (port $API_PORT) — sandbox router may not be running"
+        info "Non-fatal: SSH widgets will still work"
+    fi
+elif timeout 3 bash -c "echo >/dev/tcp/${PC_IP}/${API_PORT}" 2>/dev/null; then
+    ok "Workbench API port reachable ($API_PORT)"
 else
-    fail "Cannot reach Workbench API at http://${PC_IP}:${API_PORT}/api/health"
-    info "Is the sandbox router running? (check Admin TUI)"
-    exit 1
+    warn "Workbench API not reachable (port $API_PORT) — sandbox router may not be running"
+    info "Non-fatal: SSH widgets will still work"
 fi
 echo ""
 
@@ -214,18 +246,61 @@ else
     fi
 fi
 
+# Set up ssh-widget
+if [ -d "$WORKBENCH_DIR" ] && [ -f "$WORKBENCH_DIR/bin/ssh-widget" ]; then
+    chmod +x "$WORKBENCH_DIR/bin/ssh-widget"
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$WORKBENCH_DIR/bin/ssh-widget" "$HOME/.local/bin/ssh-widget"
+    ok "ssh-widget installed (~/.local/bin/ssh-widget)"
+
+    # Set PC IP so ssh-widget picks it up
+    SHELL_RC=""
+    if [ -f "$HOME/.bashrc" ]; then
+        SHELL_RC="$HOME/.bashrc"
+    elif [ -f "$HOME/.zshrc" ]; then
+        SHELL_RC="$HOME/.zshrc"
+    fi
+    if [ -n "$SHELL_RC" ]; then
+        if ! grep -q "NAI_PC_IP" "$SHELL_RC" 2>/dev/null; then
+            echo "" >> "$SHELL_RC"
+            echo "# NAI Workbench" >> "$SHELL_RC"
+            echo "export NAI_PC_IP=\"$PC_IP\"" >> "$SHELL_RC"
+            ok "NAI_PC_IP=$PC_IP added to $(basename "$SHELL_RC")"
+        else
+            info "NAI_PC_IP already in $(basename "$SHELL_RC")"
+        fi
+    fi
+    export NAI_PC_IP="$PC_IP"
+fi
+
 # Configure Wave widgets if repo exists
 if [ -d "$WORKBENCH_DIR" ]; then
     LAPTOP_WIDGETS="$WORKBENCH_DIR/config/wave/widgets-laptop.json"
     WAVE_CONFIG_DIR="$HOME/.config/waveterm"
     if [ -f "$LAPTOP_WIDGETS" ]; then
         mkdir -p "$WAVE_CONFIG_DIR"
-        sed "s/100\.95\.20\.98/${PC_IP}/g; s/TAILSCALE_IP/${PC_IP}/g" \
+        sed "s/TAILSCALE_IP/${PC_IP}/g" \
             "$LAPTOP_WIDGETS" > "$WAVE_CONFIG_DIR/widgets.json"
         ok "Wave widgets configured (restart Wave to apply)"
     fi
+
+    # Write connections.json with durable session settings
+    CONNECTIONS_TMPL="$WORKBENCH_DIR/config/wave/connections-laptop.json"
+    if [ -f "$CONNECTIONS_TMPL" ]; then
+        sed "s/TAILSCALE_IP/${PC_IP}/g" \
+            "$CONNECTIONS_TMPL" > "$WAVE_CONFIG_DIR/connections.json"
+        ok "Wave connections configured"
+    fi
 fi
 echo ""
+
+# ── Quick connectivity check ─────────────────────────────────
+if [ -d "$WORKBENCH_DIR" ] && [ -f "$WORKBENCH_DIR/bin/workbench-check" ]; then
+    echo -e "${CYAN}Running quick connectivity check...${NC}"
+    echo ""
+    NAI_PC_IP="$PC_IP" bash "$WORKBENCH_DIR/bin/workbench-check" --quick || true
+    echo ""
+fi
 
 # ── Summary ───────────────────────────────────────────────────
 echo -e "${BOLD}═══════════════════════════════════════${NC}"
@@ -236,6 +311,7 @@ echo -e "  ${GREEN}✓${NC} Device paired as: ${BOLD}$DEVICE_NAME${NC}"
 echo -e "  ${GREEN}✓${NC} SSH: ${DIM}ssh -p $SSH_PORT dev@$PC_IP${NC}"
 if [ -d "$WORKBENCH_DIR" ]; then
     echo -e "  ${GREEN}✓${NC} Repo: $WORKBENCH_DIR"
+    echo -e "  ${GREEN}✓${NC} ssh-widget: ${DIM}~/.local/bin/ssh-widget${NC}"
 fi
 echo ""
 echo -e "${DIM}Optional next steps:${NC}"

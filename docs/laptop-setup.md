@@ -1,43 +1,34 @@
-# Laptop Setup — Arch Linux Remote Access
+# Laptop Setup — Mac Remote Access
 
-Connect your Arch Linux laptop to the NAI Workbench running on your Windows PC via Tailscale VPN + SSH. The PC is the single source of truth; the laptop is a thin client.
+Connect your Mac to the NAI Workbench running on your Windows PC via Tailscale VPN + SSH. The PC is the single source of truth; the Mac is a thin client.
 
 ## Current Network Info
 
 - **PC Tailscale IP**: `100.95.20.98`
-- **Laptop Tailscale IP**: `100.79.63.10` (lamanna-arch)
+- **Mac Tailscale IP**: `100.82.234.100` (`anthonys-macbook-pro`)
 - **SSH port**: `2222`
 - **Penpot login**: `admin@local.dev` / `admin123`
 
 ## Prerequisites
 
 - Windows PC running the NAI Workbench with Tailscale Windows app installed and signed in
-- Arch Linux laptop with Tailscale installed and signed into the same account
+- Mac with Tailscale installed and signed into the same account
 - Both machines showing as "online" in Tailscale dashboard
 
 ## Step 1 — Install Wave Terminal
 
-```bash
-# AUR (recommended)
-yay -S waveterm-bin
-
-# Or download AppImage from https://www.waveterm.dev/download
-```
+Download and install Wave Terminal for macOS from https://www.waveterm.dev/download.
 
 ## Step 2 — Verify Tailscale Connectivity
 
-Tailscale should already be installed on the laptop (`lamanna-arch`). Verify:
+Tailscale should already be installed on the Mac (`anthonys-macbook-pro`). Verify:
 
 ```bash
 tailscale status
 # Should show desktop-q289nhk (the PC) as connected
 ```
 
-If not running:
-```bash
-sudo systemctl enable --now tailscaled
-sudo tailscale up
-```
+If not running, open the Tailscale macOS app and sign in to the same tailnet.
 
 Test connectivity to the PC:
 ```bash
@@ -48,7 +39,7 @@ ping 100.95.20.98
 
 Generate a key if you don't have one:
 ```bash
-ssh-keygen -t ed25519 -C "lamanna-arch"
+ssh-keygen -t ed25519 -C "anthonys-macbook-pro"
 ```
 
 Display your public key:
@@ -140,7 +131,7 @@ Open Penpot widget or navigate to `http://100.95.20.98:9001`:
 ### Can't ping the PC via Tailscale
 - Check both machines on same tailnet: `tailscale status` on both
 - PC: verify Tailscale tray icon shows "Connected"
-- Laptop: `sudo tailscale up` to re-authenticate
+- Mac: open the Tailscale app and re-authenticate if needed
 
 ### SSH connection refused
 - sshd may have stopped (WSL kills idle processes). On the PC run:

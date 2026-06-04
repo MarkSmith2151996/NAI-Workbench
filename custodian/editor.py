@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Custodian Editor — Project picker + session manager.
+"""Custodian Editor — Project picker + OpenCode launcher.
 
-Launches Claude CLI with full custodian MCP context, fossil briefs,
-and persistent session IDs per project.
+Launches OpenCode with full custodian MCP context and fossil briefs.
 """
 
+import json
 import os
 import platform
 import re
 import sqlite3
 import subprocess
 import sys
-import uuid
 from datetime import datetime
 
 from textual.app import App, ComposeResult
@@ -24,6 +23,8 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custodian.db
 
 # Detect if running in WSL (Linux but with Windows paths in DB)
 _IS_WSL = platform.system() == "Linux" and os.path.exists("/proc/version") and "microsoft" in open("/proc/version").read().lower()
+OPENCODE_BIN = os.environ.get("NAI_WORKBENCH_OPENCODE_BIN", os.path.expanduser("~/.opencode/bin/opencode"))
+OPENCODE_MODEL = os.environ.get("NAI_WORKBENCH_OPENCODE_MODEL", "openai/gpt-5.4")
 
 
 def _to_native_path(path):
@@ -48,29 +49,29 @@ def get_db():
 
 
 def get_projects():
-    """Get all active projects with fossil + session info."""
+    """Get all active projects with fossil and latest OpenCode session info."""
     conn = get_db()
     rows = conn.execute("""
         SELECT p.id, p.name, p.path, p.stack, p.last_indexed,
                (SELECT COUNT(*) FROM fossils f WHERE f.project_id = p.id) as fossil_count,
                (SELECT MAX(f.version) FROM fossils f WHERE f.project_id = p.id) as fossil_version,
                (SELECT MAX(f.created_at) FROM fossils f WHERE f.project_id = p.id) as fossil_date,
-               (SELECT COUNT(*) FROM symbols s WHERE s.project_id = p.id) as symbol_count,
-               (SELECT es.session_id FROM editor_sessions es
-                WHERE es.project_id = p.id AND es.status = 'active'
-                ORDER BY es.last_active DESC LIMIT 1) as active_session_id,
-               (SELECT es.summary FROM editor_sessions es
-                WHERE es.project_id = p.id AND es.status = 'active'
-                ORDER BY es.last_active DESC LIMIT 1) as session_summary,
-               (SELECT es.last_active FROM editor_sessions es
-                WHERE es.project_id = p.id AND es.status = 'active'
-                ORDER BY es.last_active DESC LIMIT 1) as session_last_active
+               (SELECT COUNT(*) FROM symbols s WHERE s.project_id = p.id) as symbol_count
         FROM projects p
         WHERE p.status = 'active'
         ORDER BY p.name
     """).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    projects = []
+    for row in rows:
+        project = dict(row)
+        session = get_latest_opencode_session(_to_native_path(project["path"]))
+        project["active_session_id"] = session["id"] if session else None
+        project["session_summary"] = session["title"] if session else None
+        project["session_last_active"] = session["updated"] if session else None
+        projects.append(project)
+    return projects
 
 
 def get_fossil_brief(project_id):
@@ -87,42 +88,25 @@ def get_fossil_brief(project_id):
     return dict(fossil)
 
 
-def get_or_create_session(project_id, resume=False):
-    """Get active session or create a new one. Returns (session_id, is_new)."""
-    conn = get_db()
+def get_latest_opencode_session(project_path):
+    """Return the latest OpenCode session for a project directory."""
+    if not project_path or not os.path.isdir(project_path):
+        return None
 
-    if resume:
-        row = conn.execute("""
-            SELECT session_id FROM editor_sessions
-            WHERE project_id = ? AND status = 'active'
-            ORDER BY last_active DESC LIMIT 1
-        """, (project_id,)).fetchone()
-        if row:
-            conn.execute(
-                "UPDATE editor_sessions SET last_active = datetime('now') WHERE session_id = ?",
-                (row["session_id"],),
-            )
-            conn.commit()
-            conn.close()
-            return row["session_id"], False
-
-    # Create new session
-    session_id = str(uuid.uuid4())
-
-    # Mark old sessions as inactive
-    conn.execute(
-        "UPDATE editor_sessions SET status = 'closed' WHERE project_id = ? AND status = 'active'",
-        (project_id,),
-    )
-
-    hostname = os.environ.get("HOSTNAME", os.environ.get("COMPUTERNAME", "unknown"))
-    conn.execute("""
-        INSERT INTO editor_sessions (project_id, session_id, device, status)
-        VALUES (?, ?, ?, 'active')
-    """, (project_id, session_id, hostname))
-    conn.commit()
-    conn.close()
-    return session_id, True
+    try:
+        result = subprocess.run(
+            [OPENCODE_BIN, "session", "list", "--format", "json", "--max-count", "1"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        sessions = json.loads(result.stdout)
+        return sessions[0] if sessions else None
+    except Exception:
+        return None
 
 
 def get_git_info(project_path):
@@ -148,7 +132,7 @@ def get_git_info(project_path):
 
 
 def build_system_prompt(project, fossil_brief):
-    """Build the full system prompt for the Claude session."""
+    """Build the startup prompt for a new OpenCode session."""
     parts = []
 
     parts.append(
@@ -217,8 +201,8 @@ RULES:
     return "\n".join(parts)
 
 
-def launch_claude(project, session_id, resume, system_prompt):
-    """Launch Claude CLI as a child process. Returns when Claude exits."""
+def launch_opencode(project, session_id, resume, system_prompt):
+    """Launch OpenCode as a child process. Returns when OpenCode exits."""
     # Reset terminal fully — clear Textual's alternate screen buffer
     sys.stdout.write("\033[?1049l")  # exit alternate screen
     sys.stdout.write("\033[?25h")    # show cursor
@@ -227,25 +211,17 @@ def launch_claude(project, session_id, resume, system_prompt):
     sys.stdout.write("\033[H")       # cursor home
     sys.stdout.flush()
 
-    # Build args list
-    args = ["claude"]
-
-    # Skip permission prompts — editor sessions are trusted dev environments
-    args.append("--dangerously-skip-permissions")
-
-    if resume:
-        args.extend(["--resume", session_id])
+    args = [OPENCODE_BIN, "--model", OPENCODE_MODEL]
+    if resume and session_id:
+        args.extend(["--session", session_id])
     else:
-        args.extend(["--session-id", session_id])
+        args.extend(["--prompt", system_prompt])
+    args.append(project["path"])
 
-    # MCP tools are configured in user-scope ~/.claude.json (registered via
-    # `claude mcp add-json --scope user custodian '...'`). No --mcp-config needed.
-    # Using --mcp-config would override/conflict with the working user-scope config.
+    env = os.environ.copy()
+    env.setdefault("OPENCODE_DISABLE_UPDATE_CHECK", "1")
 
-    args.extend(["--append-system-prompt", system_prompt])
-
-    # Run Claude as child process — returns when Claude exits (double-Esc)
-    subprocess.run(args, cwd=project["path"])
+    subprocess.run(args, cwd=project["path"], env=env)
 
 
 # --- TUI ---
@@ -375,11 +351,11 @@ class EditorApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static(" CUSTODIAN EDITOR ", id="title-bar")
+        yield Static(" CUSTODIAN EDITOR - OPENCODE ", id="title-bar")
         yield VerticalScroll(id="project-list")
         with Horizontal(id="action-bar"):
-            yield Button("[R] Resume", variant="primary", id="btn-resume")
-            yield Button("[N] New Session", variant="success", id="btn-new")
+            yield Button("[R] Resume OpenCode", variant="primary", id="btn-resume")
+            yield Button("[N] New OpenCode", variant="success", id="btn-new")
             yield Button("[U] Update", variant="warning", id="btn-update")
             yield Button("[Q] Quit", variant="error", id="btn-quit")
         yield Static("Select a project to begin", id="status-line")
@@ -415,7 +391,7 @@ class EditorApp(App):
         if self._projects:
             proj = self._projects[self._selected_index]
             has_session = bool(proj.get("active_session_id"))
-            status = f"{proj['name']}  —  {'[R]esume or [N]ew session' if has_session else '[N]ew session'}"
+            status = f"{proj['name']}  -  {'[R]esume or [N]ew OpenCode session' if has_session else '[N]ew OpenCode session'}"
             self.query_one("#status-line", Static).update(status)
 
     def action_move_up(self):
@@ -533,10 +509,13 @@ class EditorApp(App):
         proj_native = dict(proj)
         proj_native["path"] = native_path
 
-        # Get or create session
-        session_id, is_new = get_or_create_session(proj["id"], resume=resume)
+        latest_session = get_latest_opencode_session(native_path) if resume else None
+        session_id = latest_session["id"] if latest_session else None
+        if resume and not session_id:
+            self.notify("No previous OpenCode session found - starting new", severity="warning")
+            resume = False
 
-        # Build system prompt
+        # Build startup prompt for new sessions
         fossil_brief = get_fossil_brief(proj["id"])
         system_prompt = build_system_prompt(proj, fossil_brief)
 
@@ -545,7 +524,7 @@ class EditorApp(App):
         self.exit(result={
             "project": proj_native,
             "session_id": session_id,
-            "resume": resume and not is_new,
+            "resume": resume and bool(session_id),
             "system_prompt": system_prompt,
             "fossil_brief": fossil_brief,
         })
@@ -561,8 +540,8 @@ if __name__ == "__main__":
         init_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init_db.py")
         subprocess.run([sys.executable, init_script])
 
-    # Main loop: picker → Claude → picker → Claude → ...
-    # Double-Esc in Claude exits back to the picker. Q in picker quits entirely.
+    # Main loop: picker -> OpenCode -> picker -> OpenCode -> ...
+    # Exiting OpenCode returns to the picker. Q in picker quits entirely.
     while True:
         app = EditorApp()
         result = app.run()
@@ -573,20 +552,21 @@ if __name__ == "__main__":
 
         proj = result["project"]
         action = "Resuming" if result["resume"] else "Starting new"
-        print(f"\n{action} session for {proj['name']}...")
-        print(f"Session: {result['session_id'][:8]}...")
+        print(f"\n{action} OpenCode session for {proj['name']}...")
+        if result["session_id"]:
+            print(f"Session: {result['session_id'][:12]}...")
         print(f"Path: {proj['path']}")
         fb = result.get("fossil_brief")
         if fb:
             print(f"Fossil: {fb.get('summary', '')[:80]}")
         print()
 
-        launch_claude(
+        launch_opencode(
             proj,
             result["session_id"],
             result["resume"],
             result["system_prompt"],
         )
 
-        # Claude exited (double-Esc) — loop back to picker
+        # OpenCode exited - loop back to picker
         print("\n[Returning to project picker...]\n")

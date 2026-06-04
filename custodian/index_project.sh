@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMP_DIR="/tmp/custodian"
 VENV_PYTHON="$HOME/.custodian-venv/bin/python3"
 DB_PATH="$SCRIPT_DIR/custodian.db"
+INDEXER="${CUSTODIAN_INDEXER:-opencode}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -70,6 +71,7 @@ SYMBOLS_OUTPUT="$TEMP_DIR/symbols-${PROJECT_NAME}.json"
 GIT_LOG_OUTPUT="$TEMP_DIR/gitlog-${PROJECT_NAME}.txt"
 GIT_DIFF_OUTPUT="$TEMP_DIR/gitdiff-${PROJECT_NAME}.txt"
 SONNET_OUTPUT="$TEMP_DIR/fossil-${PROJECT_NAME}.json"
+OPENCODE_STREAM="$TEMP_DIR/opencode-stream-${PROJECT_NAME}.jsonl"
 
 # ── Step 1: repomix dump ──────────────────────────────────────────────
 log "Step 1/6: Running repomix on $PROJECT_NAME..."
@@ -164,8 +166,8 @@ conn.close()
 " "$SCRIPT_DIR/init_db.py" "$PROJECT_NAME" 2>/dev/null || echo "Analyze this codebase and produce a JSON fossil.")
 success "Prompt loaded"
 
-# ── Step 5: Run Sonnet ────────────────────────────────────────────────
-log "Step 5/6: Running Sonnet analysis (this may take a minute)..."
+# ── Step 5: Run deep analysis ─────────────────────────────────────────
+log "Step 5/6: Running deep analysis (this may take a minute)..."
 
 # Build the input for Sonnet
 SONNET_INPUT="$TEMP_DIR/sonnet-input-${PROJECT_NAME}.txt"
@@ -194,10 +196,48 @@ if [ "$SONNET_INPUT_SIZE" -gt "$MAX_SIZE" ]; then
     mv "$SONNET_INPUT.tmp" "$SONNET_INPUT"
 fi
 
-# Run Sonnet via Claude CLI (clear env vars to allow nested invocation)
+# Run indexer (OpenCode by default, Claude fallback preserved)
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 SONNET_STDERR="$TEMP_DIR/sonnet-stderr-${PROJECT_NAME}.txt"
-claude --model sonnet -p "$CUSTODIAN_PROMPT" < "$SONNET_INPUT" > "$SONNET_OUTPUT" 2>"$SONNET_STDERR"
+
+if [ "$INDEXER" = "opencode" ]; then
+    log "Step 5/6: Running OpenCode analysis (indexer=opencode)..."
+    {
+        printf '%s\n\n---\n' "$CUSTODIAN_PROMPT"
+        cat "$SONNET_INPUT"
+    } | /home/dev/.opencode/bin/opencode run --dir "$PROJECT_PATH" --model openai/gpt-5.4 --format json > "$OPENCODE_STREAM" 2>"$SONNET_STDERR"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r 'select(.type == "text") | .part.text' "$OPENCODE_STREAM" > "$SONNET_OUTPUT"
+    else
+        "$VENV_PYTHON" - <<'PY' "$OPENCODE_STREAM" "$SONNET_OUTPUT"
+import json, sys
+stream_path, output_path = sys.argv[1], sys.argv[2]
+texts = []
+with open(stream_path, encoding="utf-8", errors="replace") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "text":
+            texts.append(event.get("part", {}).get("text", ""))
+with open(output_path, "w", encoding="utf-8") as out:
+    out.write(texts[-1] if texts else "")
+PY
+    fi
+
+    # TODO: parse step_finish tokens/cost from $OPENCODE_STREAM if indexing_runs grows usage columns.
+elif [ "$INDEXER" = "claude" ]; then
+    log "Step 5/6: Running Claude analysis (indexer=claude, fallback path)..."
+    claude --model sonnet -p "$CUSTODIAN_PROMPT" < "$SONNET_INPUT" > "$SONNET_OUTPUT" 2>"$SONNET_STDERR"
+else
+    error "Unknown indexer: $INDEXER"
+    exit 1
+fi
 
 if [ $? -ne 0 ] || [ ! -s "$SONNET_OUTPUT" ]; then
     error "Sonnet analysis failed"
@@ -220,7 +260,7 @@ else
 fi
 
 # Cleanup temp files
-rm -f "$REPOMIX_OUTPUT" "$SYMBOLS_OUTPUT" "$GIT_LOG_OUTPUT" "$GIT_DIFF_OUTPUT" "$SONNET_INPUT" "$SONNET_OUTPUT" "$SONNET_STDERR"
+rm -f "$REPOMIX_OUTPUT" "$SYMBOLS_OUTPUT" "$GIT_LOG_OUTPUT" "$GIT_DIFF_OUTPUT" "$SONNET_INPUT" "$SONNET_OUTPUT" "$SONNET_STDERR" "$OPENCODE_STREAM"
 
 # Mark indexing run as completed
 _update_run_status "completed"

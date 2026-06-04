@@ -17,7 +17,9 @@
       "args": ["custodian/mcp_server.py"],
       "cwd": "C:\\Users\\Big A\\NAI-Workbench",
       "env": {
-        "PYTHONPATH": "C:\\Users\\Big A\\NAI-Workbench\\custodian"
+        "PYTHONPATH": "C:\\Users\\Big A\\NAI-Workbench\\custodian",
+        "LAPTOP_BRIDGE_URL": "http://100.82.234.100:8222",
+        "LAPTOP_BRIDGE_TOKEN": "xDZ4eGwzukJf5Obf3jVe6NfddFV4_LtrVxqgwJAQyXc"
       }
     }
   }

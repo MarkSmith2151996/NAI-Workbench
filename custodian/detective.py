@@ -11,8 +11,7 @@ Analyses:
 Also handles prompt refinement based on MCP query logs.
 
 Usage:
-    detective.py --model sonnet [--project NAME]    # Run analysis
-    detective.py --model opus [--project NAME]      # Deep analysis
+    detective.py --model openai/gpt-5.4 [--project NAME]    # Run analysis
     detective.py --refine-prompt                    # Analyze query gaps → refine prompt
 """
 
@@ -20,9 +19,10 @@ import argparse
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 from datetime import datetime
+
+from opencode_runner import OpenCodeRunnerError, run_opencode
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custodian.db")
 
@@ -150,7 +150,7 @@ def build_analysis_context(project_name=None):
 
 
 def run_analysis(model, project_name=None):
-    """Run detective analysis using Claude."""
+    """Run detective analysis using OpenCode."""
     context, project_id = build_analysis_context(project_name)
     if context is None:
         return
@@ -184,19 +184,14 @@ Output ONLY valid JSON array. No markdown fences."""
     print(f"Context size: {len(context)} chars")
 
     try:
-        result = subprocess.run(
-            ["claude", "--model", model, "-p", prompt],
-            input=context,
-            capture_output=True,
-            text=True,
+        result = run_opencode(
+            prompt=context,
+            model=model,
+            system_prompt=prompt,
             timeout=300,
         )
 
-        if result.returncode != 0:
-            print(f"Claude failed: {result.stderr}", file=sys.stderr)
-            return
-
-        output = result.stdout.strip()
+        output = result.text.strip()
 
         # Try to parse JSON
         if output.startswith("```"):
@@ -234,10 +229,8 @@ Output ONLY valid JSON array. No markdown fences."""
 
         print(f"Stored {len(insights)} insights")
 
-    except subprocess.TimeoutExpired:
-        print("Analysis timed out (5 min limit)", file=sys.stderr)
-    except FileNotFoundError:
-        print("Claude CLI not found. Ensure 'claude' is in PATH.", file=sys.stderr)
+    except OpenCodeRunnerError as e:
+        print(f"OpenCode failed: {e.stderr or e}", file=sys.stderr)
 
 
 def refine_prompt():
@@ -301,19 +294,14 @@ Output ONLY valid JSON."""
     print("Analyzing query patterns for prompt refinement...")
 
     try:
-        result = subprocess.run(
-            ["claude", "--model", "sonnet", "-p", prompt],
-            input=context,
-            capture_output=True,
-            text=True,
+        result = run_opencode(
+            prompt=context,
+            model="openai/gpt-5.4",
+            system_prompt=prompt,
             timeout=120,
         )
 
-        if result.returncode != 0:
-            print(f"Failed: {result.stderr}", file=sys.stderr)
-            return
-
-        output = result.stdout.strip()
+        output = result.text.strip()
         if output.startswith("```"):
             lines = output.split("\n")
             output = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
@@ -350,7 +338,7 @@ Output ONLY valid JSON."""
                 fossil_id=None,
                 insight_type="prompt_refinement",
                 content=json.dumps(data, indent=2),
-                model_used="sonnet",
+                model_used="openai/gpt-5.4",
             )
             print("Stored prompt refinement insight")
 
@@ -359,15 +347,13 @@ Output ONLY valid JSON."""
             for change in data["changes"]:
                 print(f"  - {change}")
 
-    except subprocess.TimeoutExpired:
-        print("Prompt refinement timed out", file=sys.stderr)
-    except FileNotFoundError:
-        print("Claude CLI not found", file=sys.stderr)
+    except OpenCodeRunnerError as e:
+        print(f"Prompt refinement failed: {e.stderr or e}", file=sys.stderr)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Custodian Detective — Pattern analysis and prompt evolution")
-    parser.add_argument("--model", choices=["sonnet", "opus"], default="sonnet", help="Model to use")
+    parser.add_argument("--model", default="openai/gpt-5.4", help="OpenAI model ID to use")
     parser.add_argument("--project", "-p", help="Analyze a specific project (default: all)")
     parser.add_argument("--refine-prompt", action="store_true", help="Run prompt refinement instead of analysis")
 

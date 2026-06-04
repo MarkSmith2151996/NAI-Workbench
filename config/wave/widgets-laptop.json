@@ -7,7 +7,7 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/editor-session"
+        "cmd": "~/NAI-Workbench/bin/ssh-widget /home/dev/projects/nai-workbench/bin/editor-session"
       }
     }
   },
@@ -19,19 +19,19 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/admin-session"
+        "cmd": "~/NAI-Workbench/bin/ssh-widget /home/dev/projects/nai-workbench/bin/admin-session"
       }
     }
   },
-  "excalidraw": {
+  "penpot": {
     "icon": "paintbrush",
-    "label": "Draw",
+    "label": "Penpot",
     "color": "#6c63ff",
     "blockdef": {
       "meta": {
         "view": "web",
-        "url": "https://excalidraw.com",
-        "pinnedurl": "https://excalidraw.com"
+        "url": "http://TAILSCALE_IP:9001",
+        "pinnedurl": "http://TAILSCALE_IP:9001"
       }
     }
   },
@@ -55,7 +55,19 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP /home/dev/projects/nai-workbench/bin/notes-session"
+        "cmd": "~/NAI-Workbench/bin/ssh-widget /home/dev/projects/nai-workbench/bin/notes-session"
+      }
+    }
+  },
+  "roadmap": {
+    "icon": "list",
+    "label": "Roadmap",
+    "color": "#60a5fa",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "cmd": "~/NAI-Workbench/bin/ssh-widget /home/dev/projects/nai-workbench/bin/roadmap-session"
       }
     }
   },
@@ -67,7 +79,19 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "ssh -t -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no dev@TAILSCALE_IP"
+        "cmd": "~/NAI-Workbench/bin/ssh-widget"
+      }
+    }
+  },
+  "claude-web": {
+    "icon": "robot",
+    "label": "Claude",
+    "color": "#d97706",
+    "blockdef": {
+      "meta": {
+        "view": "web",
+        "url": "https://100.95.20.98:6901",
+        "pinnedurl": "https://100.95.20.98:6901"
       }
     }
   }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# EDITOR — Launch the Custodian Editor (project picker + Claude session)
+# EDITOR — Launch the Custodian Editor (project picker + OpenCode session)
 # Widget entry point for Wave Terminal
 # Works on both Windows (Git Bash) and WSL (via SSH from laptop)
 

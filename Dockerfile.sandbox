@@ -1,0 +1,117 @@
+# NAI Workbench — Universal Sandbox Base Image
+# Pre-installs everything containers need so sandbox_start is instant.
+#
+# Build:  bash bin/build-sandbox-image
+# Result: nai-sandbox:latest
+
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System packages ──────────────────────────────────────────────────
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    # Basic tools
+    git curl wget jq ca-certificates procps \
+    # Terminal display
+    tmux \
+    # GUI display (Xvfb + VNC + noVNC)
+    xvfb x11vnc novnc fluxbox x11-xserver-utils xterm \
+    # Python GUI support
+    python3-tk \
+    # Build essentials (some pip packages need gcc)
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── ripgrep (not in Debian slim repos) ───────────────────────────────
+RUN curl -sL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep_14.1.1-1_amd64.deb \
+    -o /tmp/rg.deb && dpkg -i /tmp/rg.deb && rm /tmp/rg.deb
+
+# ── ttyd (terminal in browser) ──────────────────────────────────────
+RUN curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
+    -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd
+
+# ── Node.js 22 ───────────────────────────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python packages (common sandbox tools) ───────────────────────────
+RUN pip install --no-cache-dir \
+    textual rich ruff
+
+# ── noVNC custom viewer (fullscreen, no toolbar) ─────────────────────
+RUN echo '<html><head><meta http-equiv="refresh" content="0;url=sandbox.html"></head></html>' \
+    > /usr/share/novnc/index.html
+
+COPY <<'VNCHTML' /usr/share/novnc/sandbox.html
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><title>Sandbox</title>
+<style>
+*{margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#1e1e2e}
+#screen{width:100vw;height:100vh}
+#screen canvas{width:100%!important;height:100%!important}
+</style>
+<script type="module">
+import RFB from './core/rfb.js';
+const host=window.location.hostname,port=window.location.port;
+const proto=window.location.protocol==='https:'?'wss':'ws';
+const url=proto+'://'+host+':'+port+'/websockify';
+const rfb=new RFB(document.getElementById('screen'),url);
+rfb.scaleViewport=true;rfb.resizeSession=true;
+</script>
+</head><body><div id="screen"></div></body></html>
+VNCHTML
+RUN sed -i 's/\r$//' /usr/share/novnc/sandbox.html /usr/share/novnc/index.html
+
+# ── noVNC wrapper script (GUI apps) ─────────────────────────────────
+COPY <<'WRAPPER' /usr/local/bin/novnc-wrap
+#!/bin/bash
+set -e
+PORT="${1:?usage: novnc-wrap PORT command...}"
+shift
+DISPLAY=:99
+export DISPLAY
+
+Xvfb $DISPLAY -screen 0 1024x768x24 -ac +extension GLX +render -noreset &
+sleep 1
+
+fluxbox &
+sleep 1
+
+cat > ~/.fluxbox/apps <<'FBAPPS'
+[app] (name=.*)
+  [Maximized] {yes}
+  [Deco] {NONE}
+[end]
+FBAPPS
+sed -i '/toolbar.visible/d' ~/.fluxbox/init
+echo 'session.screen0.toolbar.visible: false' >> ~/.fluxbox/init
+kill -USR2 $(pgrep -x fluxbox) 2>/dev/null || true
+sleep 0.3
+
+"$@" &
+APP_PID=$!
+
+x11vnc -display $DISPLAY -forever -shared -nopw -rfbport 5900 -q &
+sleep 0.5
+
+NOVNC_PATH=$(find /usr -path "*/novnc/utils/novnc_proxy" -o -path "*/novnc/utils/launch.sh" 2>/dev/null | head -1)
+if [ -z "$NOVNC_PATH" ]; then
+    NOVNC_PATH=$(find /usr -name "websockify" -type f 2>/dev/null | head -1)
+    if [ -n "$NOVNC_PATH" ]; then
+        NOVNC_WEB=$(find /usr -path "*/novnc" -type d 2>/dev/null | head -1)
+        exec $NOVNC_PATH --web="$NOVNC_WEB" $PORT localhost:5900
+    else
+        echo "ERROR: Cannot find noVNC or websockify" >&2
+        exit 1
+    fi
+fi
+exec $NOVNC_PATH --listen $PORT --vnc localhost:5900
+WRAPPER
+
+RUN sed -i 's/\r$//' /usr/local/bin/novnc-wrap && chmod +x /usr/local/bin/novnc-wrap
+
+WORKDIR /workspace
+CMD ["sleep", "infinity"]

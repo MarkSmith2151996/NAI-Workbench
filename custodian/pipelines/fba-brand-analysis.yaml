@@ -1,0 +1,65 @@
+name: fba-brand-analysis
+version: 2
+description: Screen, download, analyze, score, and write brand data
+trigger: manual
+
+input_schema:
+  brands:
+    type: list
+    items:
+      brand:
+        type: string
+        required: true
+      keepa_url:
+        type: string
+        required: true
+
+steps:
+  - name: process_brands
+    type: foreach
+    over: "$input.brands"
+    as: brand
+    steps:
+      - name: screen
+        type: agent
+        agent: brand-amazon-screener
+        input:
+          brand: "$brand.brand"
+        output: verdict
+
+      - name: download
+        type: human_gate
+        description: "Download Keepa CSV for $brand.brand and provide the local file path"
+        awaiting:
+          csv_path:
+            type: string
+            required: true
+          notes:
+            type: string
+            required: false
+        run_if: "$screen.verdict.verdict != 'SKIP'"
+
+      - name: analyze
+        type: tool
+        project: fba-command-center
+        tool: keepa_analyze
+        input:
+          csv_path: "$download.csv_path"
+        output: analysis
+
+      - name: score
+        type: tool
+        project: fba-command-center
+        tool: scoring_engine
+        input:
+          products: "$analyze.analysis.products"
+        output: scored
+
+      - name: write
+        type: tool
+        project: fba-command-center
+        tool: db_write
+        input:
+          products: "$score.scored.scored_products"
+          dry_run: true
+        output: result

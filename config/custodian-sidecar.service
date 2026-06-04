@@ -1,0 +1,25 @@
+# Token is embedded at install time by bin/install-custodian-sidecar.
+[Unit]
+Description=NAI Workbench Custodian Sidecar MCP Server
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=__WORKING_DIRECTORY__
+ExecStart=__PYTHON__ __SCRIPT__
+Environment=SIDECAR_BIND=127.0.0.1
+Environment=SIDECAR_PORT=8224
+Environment=SIDECAR_TOKEN=__TOKEN__
+Environment=SESSION_REGISTRY_PATH=__SESSION_REGISTRY_PATH__
+Environment=MAIN_MCP_HOST=127.0.0.1
+Environment=MAIN_MCP_PORT=8223
+Environment=MAIN_MCP_SERVICE=custodian-mcp-http
+Environment=SIDECAR_SERVICE=custodian-sidecar
+Environment=SIDECAR_PUBLIC_URL=https://sidecar.lamannalogistics.com/
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -25,18 +25,6 @@
       }
     }
   },
-  "excalidraw": {
-    "icon": "paintbrush",
-    "label": "Draw",
-    "color": "#6c63ff",
-    "blockdef": {
-      "meta": {
-        "view": "web",
-        "url": "https://excalidraw.com",
-        "pinnedurl": "https://excalidraw.com"
-      }
-    }
-  },
   "sandbox-01": {
     "icon": "play",
     "label": "Sandbox",
@@ -62,6 +50,19 @@
       }
     }
   },
+  "roadmap": {
+    "icon": "list",
+    "label": "Roadmap",
+    "color": "#60a5fa",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "wsl://Ubuntu-24.04",
+        "cmd": "/home/dev/projects/nai-workbench/bin/roadmap-session"
+      }
+    }
+  },
   "wsl-terminal": {
     "icon": "brands@linux",
     "label": "Terminal",
@@ -83,6 +84,43 @@
         "view": "term",
         "controller": "shell",
         "cmd": "powershell.exe"
+      }
+    }
+  },
+  "tldraw": {
+    "icon": "pencil",
+    "label": "Draw",
+    "color": "#6c63ff",
+    "blockdef": {
+      "meta": {
+        "view": "web",
+        "url": "https://www.tldraw.com/",
+        "pinnedurl": "https://www.tldraw.com/"
+      }
+    }
+  },
+  "claude-browser": {
+    "icon": "robot",
+    "label": "Claude Browser",
+    "color": "#d97706",
+    "blockdef": {
+      "meta": {
+        "view": "web",
+        "url": "http://localhost:6901/",
+        "pinnedurl": "http://localhost:6901/"
+      }
+    }
+  },
+  "opencode-01": {
+    "icon": "robot",
+    "label": "OpenCode",
+    "color": "#10b981",
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "connection": "wsl://Ubuntu-24.04",
+        "cmd": "/home/dev/projects/nai-workbench/bin/opencode-session"
       }
     }
   }
