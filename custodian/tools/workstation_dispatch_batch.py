@@ -8,6 +8,9 @@ from mcp.types import TextContent
 from custodian.services.workstations import dispatch_batch
 
 
+WORKSTATION_DISPATCH_TIMEOUT = 300
+
+
 METADATA = {
     "name": "workstation_dispatch_batch",
     "description": "Dispatch multiple tasks to a workstation-bound agent with bounded parallelism.",
@@ -24,10 +27,13 @@ METADATA = {
 
 
 async def handle(params: dict, db):
-    result = await asyncio.to_thread(
-        dispatch_batch,
-        params["agent_name"],
-        params.get("tasks") or [],
-        params.get("parallel"),
+    result = await asyncio.wait_for(
+        asyncio.to_thread(
+            dispatch_batch,
+            params["agent_name"],
+            params.get("tasks") or [],
+            params.get("parallel"),
+        ),
+        timeout=WORKSTATION_DISPATCH_TIMEOUT,
     )
     return [TextContent(type="text", text=json.dumps(result, indent=2))]

@@ -72,6 +72,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-04 | II-104 | Increased workstation dispatch and workstation exec waits to 300 seconds for long-running Keepa/download tasks |
 | 2026-06-04 | II-103 | Backed up Custodian DB and OpenCode config to shared storage, committed/pushed backup-state repos, and wrote system backup manifest |
 | 2026-06-03 | II-101 | Added separation-of-powers executor/planner guidance to global OpenCode instructions and generated Claude skill boundary update files |
 | 2026-06-03 | II-100 | Added batch workstation dispatch, batch slot allocation/release, foreach shortcut routing for workstation agents, watcher slot queueing, and batch dispatch MCP wrapper |
@@ -81,7 +82,6 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | 2026-06-02 | II-096 | Added Rule 17 to the global OpenCode instructions to block shared-folder writes when the target directory has not been pre-created |
 | 2026-06-01 | II-093 | Switched the Windows command bridge to PowerShell `-EncodedCommand` to fix quoting, spaced-path, and nested-command execution |
 | 2026-06-01 | II-087 | Replaced the old HTTP Windows bridge with WSL-native Windows interop and path conversion |
-| 2026-05-31 | EE-031 | Deployed the SearXNG-backed web search tool into the MCP surface |
 
 ## Known Issues
 

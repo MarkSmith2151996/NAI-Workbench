@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from mcp.types import TextContent
 
 from custodian.services.workstations import dispatch_agent
+
+
+WORKSTATION_DISPATCH_TIMEOUT = 300
 
 
 METADATA = {
@@ -22,5 +26,8 @@ METADATA = {
 
 
 async def handle(params: dict, db):
-    result = dispatch_agent(params["agent_name"], params["task"])
+    result = await asyncio.wait_for(
+        asyncio.to_thread(dispatch_agent, params["agent_name"], params["task"]),
+        timeout=WORKSTATION_DISPATCH_TIMEOUT,
+    )
     return [TextContent(type="text", text=json.dumps(result, indent=2))]

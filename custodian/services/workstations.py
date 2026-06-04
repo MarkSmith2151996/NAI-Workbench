@@ -774,7 +774,7 @@ def retire_workstation(spec_name: str) -> dict[str, Any]:
     return {"spec": _spec_dict(spec_row), "instance": _row_dict(instance), "container_removed": True}
 
 
-def exec_in_workstation(spec_name: str, command: str, slot_index: int | None = None, timeout: int = 30) -> dict[str, Any]:
+def exec_in_workstation(spec_name: str, command: str, slot_index: int | None = None, timeout: int = 300) -> dict[str, Any]:
     status = get_instance_status(spec_name)
     instance = status.get("instance")
     if not instance or instance.get("status") != "warm" or not status.get("container", {}).get("running"):
@@ -789,7 +789,7 @@ def exec_in_workstation(spec_name: str, command: str, slot_index: int | None = N
         ["docker", "exec", "-w", workdir, instance["container_name"], "bash", "-lc", command],
         capture_output=True,
         text=True,
-        timeout=min(int(timeout or 30), 300),
+        timeout=min(int(timeout or 300), 300),
     )
     return {
         "spec": spec_name,
