@@ -60,6 +60,9 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | `custodian/oauth_provider.py` | OAuth provider implementation for the HTTP MCP server |
 | `custodian/schema.sql` | Canonical SQLite schema for Custodian state |
 | `custodian/tools/browser_use.py` | WSL-host browser-use MCP tool for LLM-driven headless Chromium automation, downloads, and optional persistent Chromium profiles |
+| `custodian/tools/stock_quote.py` | MCP tool for fast yfinance-backed live quote lookups across one or more ticker symbols |
+| `custodian/tools/stock_details.py` | MCP tool for single-ticker yfinance research details including valuation, earnings, analyst targets, and short interest |
+| `custodian/tools/stock_history.py` | MCP tool for yfinance OHLCV price history with summary statistics and capped bar output |
 | `custodian/tools/workstation_*.py` | MCP wrappers for workstation create/update/status/allocate/release/retire/exec tools |
 | `custodian/custodian.db` | Main shared SQLite DB used by tasks, projects, fossils, agents, tools, and memories |
 | `config/wave/widgets.json` | Source-of-truth Wave widget config for the Windows PC |
@@ -73,6 +76,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-05 | II-113 | Installed `yfinance` in the Custodian venv and added `stock_quote`, `stock_details`, and `stock_history` MCP tools with hot-reload discovery and bad-ticker handling |
 | 2026-06-05 | II-112 | Added `chrome_cdp` support to the `browser_use` MCP tool, verified browser-use uses `cdp_url`, confirmed Windows Chrome CDP reachability, and passed the SDK CDP example.com test through real Chrome |
 | 2026-06-04 | II-111 | Attempted to convert the Mac Custodian Panel into a unified menu bar tabbed app, but Mac bridge authentication returned 401 before current files could be read or updated |
 | 2026-06-04 | II-110 | Added optional `user_data_dir` support to the `browser_use` MCP tool, passed it into `BrowserSession`, created the default Keepa browser-use profile directory, and verified the parameter wiring |
@@ -82,7 +86,6 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | 2026-06-04 | II-106 | Ran OpenAI Agents SDK stock-research POC from WSL host, saved runner/results/logs to shared storage, confirmed MCP `web_search` discovery, and recorded that Chat Completions fallback produced agent outputs without tool invocation |
 | 2026-06-04 | II-105 | Created Berj's segregated OpenCode picker under `/home/dev/bin`, verified it shows only whitelisted `berj-` sessions/projects, and copied it to shared review storage |
 | 2026-06-04 | II-104 | Increased workstation dispatch and workstation exec waits to 300 seconds for long-running Keepa/download tasks |
-| 2026-06-04 | II-103 | Backed up Custodian DB and OpenCode config to shared storage, committed/pushed backup-state repos, and wrote system backup manifest |
 
 ## Known Issues
 
