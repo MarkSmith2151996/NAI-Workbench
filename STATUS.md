@@ -59,7 +59,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | `custodian/services/native.py` | Native extension HTTP client layer |
 | `custodian/oauth_provider.py` | OAuth provider implementation for the HTTP MCP server |
 | `custodian/schema.sql` | Canonical SQLite schema for Custodian state |
-| `custodian/tools/browser_use.py` | WSL-host browser-use MCP tool for LLM-driven headless Chromium automation, downloads, and optional persistent Chromium profiles |
+| `custodian/tools/browser_use.py` | WSL-host browser-use MCP tool for LLM-driven headless Chromium automation, downloads, optional persistent Chromium profiles, CDP attach mode, and action-log reporting |
 | `custodian/tools/stock_quote.py` | MCP tool for fast yfinance-backed live quote lookups across one or more ticker symbols |
 | `custodian/tools/stock_details.py` | MCP tool for single-ticker yfinance research details including valuation, earnings, analyst targets, and short interest |
 | `custodian/tools/stock_history.py` | MCP tool for yfinance OHLCV price history with summary statistics and capped bar output |
@@ -76,6 +76,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-05 | II-114 | Added browser-use action-log reporting, audited Keepa CDP navigation for 3 brands, wrote the optimized Keepa instruction template, and reran optimized timing comparisons |
 | 2026-06-05 | II-113 | Installed `yfinance` in the Custodian venv and added `stock_quote`, `stock_details`, and `stock_history` MCP tools with hot-reload discovery and bad-ticker handling |
 | 2026-06-05 | II-112 | Added `chrome_cdp` support to the `browser_use` MCP tool, verified browser-use uses `cdp_url`, confirmed Windows Chrome CDP reachability, and passed the SDK CDP example.com test through real Chrome |
 | 2026-06-04 | II-111 | Attempted to convert the Mac Custodian Panel into a unified menu bar tabbed app, but Mac bridge authentication returned 401 before current files could be read or updated |
@@ -85,7 +86,6 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | 2026-06-04 | II-107 | Patched the AgenticFactory OpenCode proxy to translate/pass through Chat Completions tool calls, disabled stock-test tracing, restarted the proxy, and reran the SDK stock test with live finance-source outputs |
 | 2026-06-04 | II-106 | Ran OpenAI Agents SDK stock-research POC from WSL host, saved runner/results/logs to shared storage, confirmed MCP `web_search` discovery, and recorded that Chat Completions fallback produced agent outputs without tool invocation |
 | 2026-06-04 | II-105 | Created Berj's segregated OpenCode picker under `/home/dev/bin`, verified it shows only whitelisted `berj-` sessions/projects, and copied it to shared review storage |
-| 2026-06-04 | II-104 | Increased workstation dispatch and workstation exec waits to 300 seconds for long-running Keepa/download tasks |
 
 ## Known Issues
 

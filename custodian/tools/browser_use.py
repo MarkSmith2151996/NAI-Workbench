@@ -4,6 +4,7 @@ import json
 from mcp.types import TextContent
 import os
 from pathlib import Path
+from typing import Any
 
 METADATA = {
     "name": "browser_use",
@@ -42,6 +43,39 @@ METADATA = {
         ]
     }
 }
+
+
+def _truncate(value: Any, limit: int = 200) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+def _build_action_log(history) -> list[dict[str, Any]]:
+    action_log = []
+    try:
+        action_history = history.action_history()
+    except Exception as exc:
+        return [{"step": None, "error": f"failed to extract action history: {type(exc).__name__}: {exc}"}]
+
+    for step_number, step_actions in enumerate(action_history, start=1):
+        actions = []
+        for action in step_actions:
+            if not isinstance(action, dict):
+                actions.append({"action": _truncate(action)})
+                continue
+
+            action_data = {key: value for key, value in action.items() if key not in {"result", "interacted_element"}}
+            actions.append(
+                {
+                    "action": _truncate(action_data, 500),
+                    "result": _truncate(action.get("result"), 200),
+                    "interacted_element": _truncate(action.get("interacted_element"), 500),
+                }
+            )
+        action_log.append({"step": step_number, "actions": actions})
+    return action_log
 
 
 async def handle(params: dict, db):
@@ -139,6 +173,7 @@ async def handle(params: dict, db):
             "result": history.final_result() or "",
             "downloaded_files": downloaded_files,
             "steps_taken": history.number_of_steps(),
+            "action_log": _build_action_log(history),
         }
     except Exception as exc:
         return {
