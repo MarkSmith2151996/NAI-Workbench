@@ -59,6 +59,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | `custodian/services/native.py` | Native extension HTTP client layer |
 | `custodian/oauth_provider.py` | OAuth provider implementation for the HTTP MCP server |
 | `custodian/schema.sql` | Canonical SQLite schema for Custodian state |
+| `custodian/tools/browser_use.py` | WSL-host browser-use MCP tool for LLM-driven headless Chromium automation, downloads, and optional persistent Chromium profiles |
 | `custodian/tools/workstation_*.py` | MCP wrappers for workstation create/update/status/allocate/release/retire/exec tools |
 | `custodian/custodian.db` | Main shared SQLite DB used by tasks, projects, fossils, agents, tools, and memories |
 | `config/wave/widgets.json` | Source-of-truth Wave widget config for the Windows PC |
@@ -72,16 +73,16 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-05 | II-112 | Added `chrome_cdp` support to the `browser_use` MCP tool, verified browser-use uses `cdp_url`, confirmed Windows Chrome CDP reachability, and passed the SDK CDP example.com test through real Chrome |
+| 2026-06-04 | II-111 | Attempted to convert the Mac Custodian Panel into a unified menu bar tabbed app, but Mac bridge authentication returned 401 before current files could be read or updated |
+| 2026-06-04 | II-110 | Added optional `user_data_dir` support to the `browser_use` MCP tool, passed it into `BrowserSession`, created the default Keepa browser-use profile directory, and verified the parameter wiring |
+| 2026-06-04 | II-109 | Attempted to package the Mac PySide6 Custodian Panel as a `.app`, but Mac bridge authentication returned 401 before any Mac-side files could be created |
+| 2026-06-04 | II-108 | Installed browser-use/Playwright for WSL and the Custodian MCP service venv, added the `browser_use` MCP tool, verified direct and routed example.com browser automation, and saved verification artifacts |
+| 2026-06-04 | II-107 | Patched the AgenticFactory OpenCode proxy to translate/pass through Chat Completions tool calls, disabled stock-test tracing, restarted the proxy, and reran the SDK stock test with live finance-source outputs |
+| 2026-06-04 | II-106 | Ran OpenAI Agents SDK stock-research POC from WSL host, saved runner/results/logs to shared storage, confirmed MCP `web_search` discovery, and recorded that Chat Completions fallback produced agent outputs without tool invocation |
+| 2026-06-04 | II-105 | Created Berj's segregated OpenCode picker under `/home/dev/bin`, verified it shows only whitelisted `berj-` sessions/projects, and copied it to shared review storage |
 | 2026-06-04 | II-104 | Increased workstation dispatch and workstation exec waits to 300 seconds for long-running Keepa/download tasks |
 | 2026-06-04 | II-103 | Backed up Custodian DB and OpenCode config to shared storage, committed/pushed backup-state repos, and wrote system backup manifest |
-| 2026-06-03 | II-101 | Added separation-of-powers executor/planner guidance to global OpenCode instructions and generated Claude skill boundary update files |
-| 2026-06-03 | II-100 | Added batch workstation dispatch, batch slot allocation/release, foreach shortcut routing for workstation agents, watcher slot queueing, and batch dispatch MCP wrapper |
-| 2026-06-03 | II-099 | Added workstation-backed agent loop dispatch, agent/spec tool-definition integration, direct MCP dispatch, and single agent-step pipeline routing |
-| 2026-06-03 | II-098 | Added Phase 1 workstation DB migrations, service module, MCP wrappers, and lifecycle verification report |
-| 2026-06-03 | II-097 | Audited box, native extension, agent, pipeline, and sandbox runtime infrastructure for workstation layer planning; wrote recon report to shared output folder |
-| 2026-06-02 | II-096 | Added Rule 17 to the global OpenCode instructions to block shared-folder writes when the target directory has not been pre-created |
-| 2026-06-01 | II-093 | Switched the Windows command bridge to PowerShell `-EncodedCommand` to fix quoting, spaced-path, and nested-command execution |
-| 2026-06-01 | II-087 | Replaced the old HTTP Windows bridge with WSL-native Windows interop and path conversion |
 
 ## Known Issues
 
