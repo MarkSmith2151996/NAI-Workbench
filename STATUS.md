@@ -76,6 +76,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-07 | II-122 | Recreated `steel-browser-api` with `steel-profiles:/tmp/steel-chrome` mounted at the discovered Chromium user-data directory, preserved `steel-data:/data`, set `--restart unless-stopped`, verified Steel health on port 3010, confirmed `profileId=keepa-auth` session creation before and after restart, and wrote `volume-mount-results.txt` |
 | 2026-06-07 | II-121 | Verified the refreshed Keepa cookie JSON contains 11 cookies with long-lived token cookies and `cf_clearance`, but the MCP `browser_use` request failed at HTTP auth with `invalid_token` / `Authentication required`; per STOP rule the standalone Playwright backup was not run and `verification-results.txt` was written |
 | 2026-06-07 | II-120 | Wired Steel `browser_use` sessions to create sessions with the Chrome 131 `userAgent`, normalize Steel WebSocket URLs to port 3010, inject 10 Keepa cookies from the shared cookie JSON before browser-use navigation, and verified the MCP path runs but still reaches Keepa Pro instead of the Product Finder grid |
 | 2026-06-06 | II-119 | Retried Steel `keepa-auth` profile creation with credentials present, submitted the Keepa login form through Steel, but new-profile verification still hit `Keepa Pro | Unlock Advanced Data & Tools`; per STOP rule the MCP browser_use profile test was skipped and the login output log was updated |
@@ -85,7 +86,6 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | 2026-06-06 | II-115 | Added default-on CDP isolated browser contexts for `browser_use`, filtered CDP page visibility to per-call targets, disposed contexts during cleanup, and saved the updated tool copy to shared audit storage |
 | 2026-06-05 | II-114 | Added browser-use action-log reporting, audited Keepa CDP navigation for 3 brands, wrote the optimized Keepa instruction template, and reran optimized timing comparisons |
 | 2026-06-05 | II-113 | Installed `yfinance` in the Custodian venv and added `stock_quote`, `stock_details`, and `stock_history` MCP tools with hot-reload discovery and bad-ticker handling |
-| 2026-06-05 | II-112 | Added `chrome_cdp` support to the `browser_use` MCP tool, verified browser-use uses `cdp_url`, confirmed Windows Chrome CDP reachability, and passed the SDK CDP example.com test through real Chrome |
 
 ## Known Issues
 
@@ -101,3 +101,4 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 - II-119 blocker: Programmatic Keepa login via Steel submitted credentials but did not produce a Product Finder-accessible `keepa-auth` profile; manual login via the Steel viewer at `http://localhost:5174` is likely required.
 - II-120 blocker: Steel `browser_use` now injects the shared Keepa cookie JSON and MCP reports 10 injected cookies, but both MCP browser-use and direct Playwright checks still redirect Product Finder to `Keepa Pro | Unlock Advanced Data & Tools`; the shared cookie jar appears insufficient or stale for Product Finder access.
 - II-121 blocker: The refreshed cookie file passed freshness checks, but the MCP HTTP test did not reach `browser_use` because the token lookup from `.env` files produced an unauthenticated request (`invalid_token` / `Authentication required`).
+- II-122 follow-up: Steel profile persistence now works via `steel-profiles:/tmp/steel-chrome`, but `POST /v1/sessions/<id>/release` returned HTTP 500 for test sessions; container restart cleared the sessions and final health passed.
