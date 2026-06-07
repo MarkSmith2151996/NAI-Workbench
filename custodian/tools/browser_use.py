@@ -57,6 +57,11 @@ METADATA = {
                 "type": "string",
                 "description": "Steel Browser API base URL. Defaults to STEEL_BASE_URL or http://localhost:3010 in this WSL setup."
             },
+            "steel_session_url": {
+                "type": "string",
+                "description": "WebSocket URL of an existing Steel session to reuse. If provided, connects to this session and creates a new page instead of creating a new session. The session must already be authenticated.",
+                "default": ""
+            },
             "isolated_context": {
                 "type": "boolean",
                 "description": "Legacy chrome_cdp fallback only. If true (default when chrome_cdp is set and use_steel=false), creates an isolated browser context per call. Steel handles isolation per session automatically."
@@ -213,17 +218,49 @@ def _load_keepa_cookie_params(cookie_file: str = KEEPA_COOKIE_FILE) -> list[dict
     return cookie_params
 
 
-def _build_steel_session_class(base_session_cls):
+def _build_steel_session_class(base_session_cls, inject_keepa_cookies: bool = True, track_pages: bool = False):
     class SteelBrowserSession(base_session_cls):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             object.__setattr__(self, "_keepa_cookie_injection_count", 0)
             object.__setattr__(self, "_keepa_storage_injection_count", 0)
+            object.__setattr__(self, "_steel_created_target_ids", set())
+            object.__setattr__(self, "_steel_shared_page_initialized", False)
+
+        async def start(self) -> None:
+            await super().start()
+            if track_pages and not self._steel_shared_page_initialized:
+                page = await self.new_page("about:blank")
+                target_id = getattr(page, "_target_id", None)
+                if target_id:
+                    await self.get_or_create_cdp_session(target_id, focus=True)
+                object.__setattr__(self, "_steel_shared_page_initialized", True)
 
         async def connect(self, cdp_url: str | None = None):
             await super().connect(cdp_url=cdp_url)
-            await self._inject_keepa_cookies_from_file()
+            if inject_keepa_cookies:
+                await self._inject_keepa_cookies_from_file()
             return self
+
+        async def new_page(self, url: str | None = None):
+            page = await super().new_page(url=url)
+            if track_pages:
+                target_id = getattr(page, "_target_id", None)
+                if target_id:
+                    self._steel_created_target_ids.add(target_id)
+            return page
+
+        async def close_steel_pages(self) -> None:
+            client = getattr(self, "_cdp_client_root", None) or getattr(self, "cdp_client", None)
+            if client is None:
+                return
+            for target_id in list(self._steel_created_target_ids):
+                try:
+                    await self.close_page(target_id)
+                except Exception:
+                    pass
+                finally:
+                    self._steel_created_target_ids.discard(target_id)
 
         async def _inject_keepa_cookies_from_file(self) -> None:
             try:
@@ -440,6 +477,7 @@ async def handle(params: dict, db):
     use_steel = _coerce_bool(params.get("use_steel"), default=True)
     steel_profile = (params.get("steel_profile") or "").strip() or None
     steel_url = (params.get("steel_url") or os.environ.get("STEEL_BASE_URL") or "http://localhost:3010").strip().rstrip("/")
+    steel_session_url = (params.get("steel_session_url") or "").strip()
     isolated_context = _coerce_bool(params.get("isolated_context"), default=bool(chrome_cdp and not use_steel))
     default_output_dir = "/mnt/c/Users/Big A/custodian-shared/nai-workbench/browser-use-outputs"
     output_dir = Path(params.get("output_dir") or default_output_dir).expanduser()
@@ -488,6 +526,7 @@ async def handle(params: dict, db):
     browser_session = None
     steel_session: dict[str, Any] | None = None
     steel_cdp_url = None
+    owns_steel_session = False
     try:
         from browser_use import Agent, BrowserSession
         from browser_use.llm.openai.chat import ChatOpenAI
@@ -500,9 +539,17 @@ async def handle(params: dict, db):
             reasoning_effort="low",
         )
         if use_steel:
-            steel_session = _create_steel_session(steel_url, steel_profile)
-            steel_cdp_url = _normalize_steel_ws_url(str(steel_session.get("websocketUrl") or ""), steel_url)
-            browser_session = _build_steel_session_class(BrowserSession)(
+            if steel_session_url:
+                steel_cdp_url = _normalize_steel_ws_url(steel_session_url, steel_url)
+            else:
+                steel_session = _create_steel_session(steel_url, steel_profile)
+                steel_cdp_url = _normalize_steel_ws_url(str(steel_session.get("websocketUrl") or ""), steel_url)
+                owns_steel_session = True
+            browser_session = _build_steel_session_class(
+                BrowserSession,
+                inject_keepa_cookies=owns_steel_session,
+                track_pages=bool(steel_session_url),
+            )(
                 cdp_url=steel_cdp_url,
                 downloads_path=str(output_dir),
                 accept_downloads=True,
@@ -541,6 +588,7 @@ async def handle(params: dict, db):
             "steps_taken": history.number_of_steps(),
             "action_log": _build_action_log(history),
             "use_steel": use_steel,
+            "steel_shared_session": bool(steel_session_url),
             "steel_session_id": steel_session.get("id") if steel_session else None,
             "steel_url": steel_url if use_steel else None,
             "steel_cdp_url": steel_cdp_url if use_steel else None,
@@ -559,12 +607,14 @@ async def handle(params: dict, db):
     finally:
         if browser_session is not None:
             try:
-                if (not use_steel) and chrome_cdp and isolated_context and hasattr(browser_session, "close_isolated_context"):
+                if use_steel and steel_session_url and hasattr(browser_session, "close_steel_pages"):
+                    await browser_session.close_steel_pages()
+                elif (not use_steel) and chrome_cdp and isolated_context and hasattr(browser_session, "close_isolated_context"):
                     await browser_session.close_isolated_context()
                 await browser_session.stop()
             except Exception:
                 pass
-        if steel_session is not None and steel_session.get("id"):
+        if owns_steel_session and steel_session is not None and steel_session.get("id"):
             try:
                 _release_steel_session(steel_url, str(steel_session["id"]))
             except Exception:

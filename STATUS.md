@@ -59,7 +59,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | `custodian/services/native.py` | Native extension HTTP client layer |
 | `custodian/oauth_provider.py` | OAuth provider implementation for the HTTP MCP server |
 | `custodian/schema.sql` | Canonical SQLite schema for Custodian state |
-| `custodian/tools/browser_use.py` | WSL-host browser-use MCP tool for LLM-driven browser automation, downloads, optional persistent Chromium profiles, default local Steel Browser sessions, legacy CDP attach mode, action-log reporting, isolated contexts, and Keepa session seeding |
+| `custodian/tools/browser_use.py` | WSL-host browser-use MCP tool for LLM-driven browser automation, downloads, optional persistent Chromium profiles, default local Steel Browser sessions, shared Steel session attach mode, legacy CDP attach mode, action-log reporting, isolated contexts, and Keepa session seeding |
 | `custodian/tools/stock_quote.py` | MCP tool for fast yfinance-backed live quote lookups across one or more ticker symbols |
 | `custodian/tools/stock_details.py` | MCP tool for single-ticker yfinance research details including valuation, earnings, analyst targets, and short interest |
 | `custodian/tools/stock_history.py` | MCP tool for yfinance OHLCV price history with summary statistics and capped bar output |
@@ -76,6 +76,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-07 | II-123 | Added `steel_session_url` support to `browser_use`, allowing calls to attach to caller-owned Steel sessions, skip fallback cookie injection, create/focus a per-call tab, close tracked tabs after use, avoid releasing shared sessions, and expose the parameter through the live MCP schema |
 | 2026-06-07 | II-122 | Recreated `steel-browser-api` with `steel-profiles:/tmp/steel-chrome` mounted at the discovered Chromium user-data directory, preserved `steel-data:/data`, set `--restart unless-stopped`, verified Steel health on port 3010, confirmed `profileId=keepa-auth` session creation before and after restart, and wrote `volume-mount-results.txt` |
 | 2026-06-07 | II-121 | Verified the refreshed Keepa cookie JSON contains 11 cookies with long-lived token cookies and `cf_clearance`, but the MCP `browser_use` request failed at HTTP auth with `invalid_token` / `Authentication required`; per STOP rule the standalone Playwright backup was not run and `verification-results.txt` was written |
 | 2026-06-07 | II-120 | Wired Steel `browser_use` sessions to create sessions with the Chrome 131 `userAgent`, normalize Steel WebSocket URLs to port 3010, inject 10 Keepa cookies from the shared cookie JSON before browser-use navigation, and verified the MCP path runs but still reaches Keepa Pro instead of the Product Finder grid |
@@ -85,7 +86,6 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | 2026-06-06 | II-116 | Seeded isolated CDP browser contexts with Keepa cookies and origin localStorage from the default Chrome profile, added injection counts to `browser_use` results, and verified Keepa Product Finder Pro access in single and parallel isolated sessions |
 | 2026-06-06 | II-115 | Added default-on CDP isolated browser contexts for `browser_use`, filtered CDP page visibility to per-call targets, disposed contexts during cleanup, and saved the updated tool copy to shared audit storage |
 | 2026-06-05 | II-114 | Added browser-use action-log reporting, audited Keepa CDP navigation for 3 brands, wrote the optimized Keepa instruction template, and reran optimized timing comparisons |
-| 2026-06-05 | II-113 | Installed `yfinance` in the Custodian venv and added `stock_quote`, `stock_details`, and `stock_history` MCP tools with hot-reload discovery and bad-ticker handling |
 
 ## Known Issues
 
@@ -102,3 +102,4 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 - II-120 blocker: Steel `browser_use` now injects the shared Keepa cookie JSON and MCP reports 10 injected cookies, but both MCP browser-use and direct Playwright checks still redirect Product Finder to `Keepa Pro | Unlock Advanced Data & Tools`; the shared cookie jar appears insufficient or stale for Product Finder access.
 - II-121 blocker: The refreshed cookie file passed freshness checks, but the MCP HTTP test did not reach `browser_use` because the token lookup from `.env` files produced an unauthenticated request (`invalid_token` / `Authentication required`).
 - II-122 follow-up: Steel profile persistence now works via `steel-profiles:/tmp/steel-chrome`, but `POST /v1/sessions/<id>/release` returned HTTP 500 for test sessions; container restart cleared the sessions and final health passed.
+- II-123 follow-up: Shared Steel session attach mode smoke-tested successfully, but caller-owned cleanup still sees the same Steel release endpoint HTTP 500 fingerprint error when test sessions are released.
