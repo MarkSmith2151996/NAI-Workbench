@@ -371,6 +371,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_ct_id ON tasks(ct_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project, status);
 
+-- Cross-session Claude context handoffs, pulled by CS-NNN ID
+CREATE TABLE IF NOT EXISTS session_transports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cs_id TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    source_project TEXT,
+    target_project TEXT,
+    created_by TEXT DEFAULT 'claude',
+    created_at TEXT DEFAULT (datetime('now')),
+    pulled_at TEXT,
+    pulled_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_transports_cs_id ON session_transports(cs_id);
+CREATE INDEX IF NOT EXISTS idx_session_transports_created ON session_transports(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_transports_source ON session_transports(source_project, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_transports_target ON session_transports(target_project, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_transports_pulled ON session_transports(pulled_at, created_at DESC);
+
 -- Lightweight todo capture layer — per-project or system-wide follow-ups
 CREATE TABLE IF NOT EXISTS todo_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

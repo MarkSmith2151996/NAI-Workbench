@@ -52,6 +52,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | `custodian/db/connection.py` | Shared SQLite connection helpers and DB path constants |
 | `custodian/db/shared.py` | Shared-folder IO helpers and cross-project utility DB operations |
 | `custodian/db/tools_registry.py` | Box tool registration/update/reload plumbing and DB records |
+| `custodian/db/transports.py` | Cross-session Claude transport helpers for creating, listing, and pulling `CS-NNN` context handoffs |
 | `custodian/services/workstations.py` | Workstation service for spec persistence, Docker lifecycle, slot allocation, batch dispatch, exec, retirement, and workstation agent dispatch |
 | `custodian/services/agent_loop.py` | Container-local LLM tool-use loop that calls the OpenCode proxy and executes workstation tool commands |
 | `custodian/services/tool_router.py` | Unified MCP/box/native-extension tool resolution layer |
@@ -69,6 +70,9 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | `custodian/tools/stock_quote.py` | MCP tool for fast yfinance-backed live quote lookups across one or more ticker symbols |
 | `custodian/tools/stock_details.py` | MCP tool for single-ticker yfinance research details including valuation, earnings, analyst targets, and short interest |
 | `custodian/tools/stock_history.py` | MCP tool for yfinance OHLCV price history with summary statistics and capped bar output |
+| `custodian/tools/submit_transport.py` | MCP wrapper that packages Claude session context as a `CS-NNN` transport |
+| `custodian/tools/get_transport.py` | MCP wrapper that pulls a `CS-NNN` transport payload and marks first pull metadata |
+| `custodian/tools/list_transports.py` | MCP wrapper that lists recent transports by project or pending/pulled status |
 | `custodian/tools/workstation_*.py` | MCP wrappers for workstation create/update/status/allocate/release/retire/exec tools |
 | `custodian/custodian.db` | Main shared SQLite DB used by tasks, projects, fossils, agents, tools, and memories |
 | `config/wave/widgets.json` | Source-of-truth Wave widget config for the Windows PC |
@@ -82,6 +86,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-08 | II-125 | Added the `session_transports` schema plus `submit_transport`, `get_transport`, and `list_transports` MCP tools for `CS-NNN` Claude-to-Claude handoffs; migrated the live DB, verified `CS-001` creation/listing/first-pull/repeat-pull/bad-ID behavior, and wrote implementation notes |
 | 2026-06-08 | II-124 | Added `_windows_ps` plus five structured Windows MCP tools for program discovery, port checks, process listing, file finding, and service health; corrected the Windows Ops skill to document PowerShell encoded-command execution and wrote implementation notes with verification results |
 | 2026-06-07 | II-123 | Added `steel_session_url` support to `browser_use`, allowing calls to attach to caller-owned Steel sessions, skip fallback cookie injection, create/focus a per-call tab, close tracked tabs after use, avoid releasing shared sessions, and expose the parameter through the live MCP schema |
 | 2026-06-07 | II-122 | Recreated `steel-browser-api` with `steel-profiles:/tmp/steel-chrome` mounted at the discovered Chromium user-data directory, preserved `steel-data:/data`, set `--restart unless-stopped`, verified Steel health on port 3010, confirmed `profileId=keepa-auth` session creation before and after restart, and wrote `volume-mount-results.txt` |
@@ -91,7 +96,6 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | 2026-06-06 | II-118 | Attempted to create the Steel `keepa-auth` profile, but stopped before login because no Keepa credentials were found in `/tmp/.keepa_creds`, environment variables, or checked `.env` files; wrote the blocked login output log and confirmed Steel API/UI remained healthy |
 | 2026-06-06 | II-117 | Stood up Steel Browser on WSL via split API/UI containers on alternate ports, patched the Steel fingerprint minVersion bug in-container, made `browser_use` default to Steel sessions with legacy CDP fallback, verified Keepa bypasses Cloudflare, and recorded that Keepa Product Finder still needs a Steel auth profile |
 | 2026-06-06 | II-116 | Seeded isolated CDP browser contexts with Keepa cookies and origin localStorage from the default Chrome profile, added injection counts to `browser_use` results, and verified Keepa Product Finder Pro access in single and parallel isolated sessions |
-| 2026-06-06 | II-115 | Added default-on CDP isolated browser contexts for `browser_use`, filtered CDP page visibility to per-call targets, disposed contexts during cleanup, and saved the updated tool copy to shared audit storage |
 
 ## Known Issues
 
