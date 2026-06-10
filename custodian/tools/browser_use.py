@@ -74,6 +74,10 @@ METADATA = {
 }
 
 
+def _json_text(payload: dict[str, Any]) -> list[TextContent]:
+    return [TextContent(type="text", text=json.dumps(payload, indent=2, default=str))]
+
+
 def _truncate(value: Any, limit: int = 200) -> str | None:
     if value is None:
         return None
@@ -469,7 +473,7 @@ def _build_isolated_cdp_session_class(base_session_cls):
 async def handle(params: dict, db):
     task = (params.get("task") or "").strip()
     if not task:
-        return {"success": False, "error": "task is required", "result": "", "downloaded_files": [], "steps_taken": 0}
+        return _json_text({"success": False, "error": "task is required", "result": "", "downloaded_files": [], "steps_taken": 0})
     
     start_url = (params.get("start_url") or "").strip()
     user_data_dir = (params.get("user_data_dir") or "").strip() or None
@@ -485,7 +489,7 @@ async def handle(params: dict, db):
     try:
         output_dir = output_dir.resolve()
     except Exception:
-        return {"success": False, "error": f"invalid output_dir: {output_dir}", "result": "", "downloaded_files": [], "steps_taken": 0}
+        return _json_text({"success": False, "error": f"invalid output_dir: {output_dir}", "result": "", "downloaded_files": [], "steps_taken": 0})
     
     shared_root = Path("/mnt/c/Users/Big A/custodian-shared").resolve()
     try:
@@ -494,24 +498,24 @@ async def handle(params: dict, db):
         is_shared_path = False
     
     if is_shared_path and not output_dir.is_dir():
-        return {
+        return _json_text({
             "success": False,
             "error": f"shared output_dir does not exist: {output_dir}",
             "result": "",
             "downloaded_files": [],
             "steps_taken": 0,
-        }
+        })
     
     if not is_shared_path:
         output_dir.mkdir(parents=True, exist_ok=True)
     elif not os.access(output_dir, os.W_OK):
-        return {
+        return _json_text({
             "success": False,
             "error": f"output_dir is not writable: {output_dir}",
             "result": "",
             "downloaded_files": [],
             "steps_taken": 0,
-        }
+        })
     
     try:
         max_steps = int(params.get("max_steps") or 15)
@@ -581,7 +585,7 @@ async def handle(params: dict, db):
         after_files = {str(path) for path in output_dir.glob("**/*") if path.is_file()}
         downloaded_files = sorted(after_files - before_files)
     
-        return {
+        return _json_text({
             "success": bool(history.is_successful()),
             "result": history.final_result() or "",
             "downloaded_files": downloaded_files,
@@ -595,15 +599,15 @@ async def handle(params: dict, db):
             "isolated_context": bool((not use_steel) and chrome_cdp and isolated_context),
             "keepa_cookies_injected": int(getattr(browser_session, "_keepa_cookie_injection_count", 0) or 0),
             "keepa_storage_keys_injected": int(getattr(browser_session, "_keepa_storage_injection_count", 0) or 0),
-        }
+        })
     except Exception as exc:
-        return {
+        return _json_text({
             "success": False,
             "error": f"browser-use task failed: {type(exc).__name__}: {exc}",
             "result": "",
             "downloaded_files": [],
             "steps_taken": 0,
-        }
+        })
     finally:
         if browser_session is not None:
             try:

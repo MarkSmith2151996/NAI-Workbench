@@ -61,6 +61,12 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | `custodian/oauth_provider.py` | OAuth provider implementation for the HTTP MCP server |
 | `custodian/schema.sql` | Canonical SQLite schema for Custodian state |
 | `custodian/tools/browser_use.py` | WSL-host browser-use MCP tool for LLM-driven browser automation, downloads, optional persistent Chromium profiles, default local Steel Browser sessions, shared Steel session attach mode, legacy CDP attach mode, action-log reporting, isolated contexts, and Keepa session seeding |
+| `custodian/tools/tys_*.py` | ToldYouSo bridge MCP tools for trading health, trades_today, reference prices, events, calendar status/start, and calendar DB diagnostics |
+| `custodian/tools/keepa_product_finder_url.py` | MCP tool that generates Keepa Product Finder URLs from brand names |
+| `custodian/tools/keepa_*_analyzer.py` | MCP wrappers for Keepa brand and competition CSV analysis |
+| `custodian/tools/pull_keepa_download.py` | MCP tool for listing and reading local Keepa CSV downloads |
+| `custodian/tools/discovery_lineage.py` | MCP tool for logging and querying FBA discovery lineage records |
+| `custodian/tools/web_search.py` | SearXNG-backed web search MCP tool returning structured search results |
 | `custodian/tools/_windows_ps.py` | Shared PowerShell bridge helper for structured Windows MCP tools; reuses `windows_bridge.run_command` and strips CLIXML stderr wrappers |
 | `custodian/tools/windows_find_program.py` | Structured Windows program finder for App Paths, Start Menu shortcuts, Program Files, and running process state |
 | `custodian/tools/windows_check_ports.py` | Structured Windows TCP listener and owning-process checker |
@@ -86,6 +92,7 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 
 | Date | Task | What Changed |
 |------|------|-------------|
+| 2026-06-10 | II-127 | Wrapped `tys_*`, Keepa helper/analyzer, discovery lineage, browser-use, and web search MCP handler returns in `TextContent` lists; verified direct `tys_health` and `keepa_product_finder_url` calls no longer produce MCP content validation errors; wrote `tys_mcp_fix_verification.md` |
 | 2026-06-08 | II-125 | Added the `session_transports` schema plus `submit_transport`, `get_transport`, and `list_transports` MCP tools for `CS-NNN` Claude-to-Claude handoffs; migrated the live DB, verified `CS-001` creation/listing/first-pull/repeat-pull/bad-ID behavior, and wrote implementation notes |
 | 2026-06-08 | II-124 | Added `_windows_ps` plus five structured Windows MCP tools for program discovery, port checks, process listing, file finding, and service health; corrected the Windows Ops skill to document PowerShell encoded-command execution and wrote implementation notes with verification results |
 | 2026-06-07 | II-123 | Added `steel_session_url` support to `browser_use`, allowing calls to attach to caller-owned Steel sessions, skip fallback cookie injection, create/focus a per-call tab, close tracked tabs after use, avoid releasing shared sessions, and expose the parameter through the live MCP schema |
@@ -95,7 +102,6 @@ Built by Antonio (Tubs), planned in Claude Desktop, executed via OpenCode.
 | 2026-06-06 | II-119 | Retried Steel `keepa-auth` profile creation with credentials present, submitted the Keepa login form through Steel, but new-profile verification still hit `Keepa Pro | Unlock Advanced Data & Tools`; per STOP rule the MCP browser_use profile test was skipped and the login output log was updated |
 | 2026-06-06 | II-118 | Attempted to create the Steel `keepa-auth` profile, but stopped before login because no Keepa credentials were found in `/tmp/.keepa_creds`, environment variables, or checked `.env` files; wrote the blocked login output log and confirmed Steel API/UI remained healthy |
 | 2026-06-06 | II-117 | Stood up Steel Browser on WSL via split API/UI containers on alternate ports, patched the Steel fingerprint minVersion bug in-container, made `browser_use` default to Steel sessions with legacy CDP fallback, verified Keepa bypasses Cloudflare, and recorded that Keepa Product Finder still needs a Steel auth profile |
-| 2026-06-06 | II-116 | Seeded isolated CDP browser contexts with Keepa cookies and origin localStorage from the default Chrome profile, added injection counts to `browser_use` results, and verified Keepa Product Finder Pro access in single and parallel isolated sessions |
 
 ## Known Issues
 

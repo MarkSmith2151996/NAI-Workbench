@@ -35,10 +35,14 @@ METADATA = {
 }
 
 
+def _json_text(payload):
+    return [TextContent(type="text", text=json.dumps(payload, indent=2, default=str))]
+
+
 async def handle(params: dict, db):
     query = (params.get("query") or "").strip()
     if not query:
-        return {"error": "query is required", "query": "", "result_count": 0, "results": []}
+        return _json_text({"error": "query is required", "query": "", "result_count": 0, "results": []})
     
     try:
         max_results = int(params.get("max_results", 10))
@@ -64,26 +68,26 @@ async def handle(params: dict, db):
         with urllib.request.urlopen(request, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
-        return {
+        return _json_text({
             "error": f"SearXNG HTTP error: {exc.code}",
             "query": query,
             "result_count": 0,
             "results": [],
-        }
+        })
     except URLError as exc:
-        return {
+        return _json_text({
             "error": f"SearXNG connection error: {exc.reason}",
             "query": query,
             "result_count": 0,
             "results": [],
-        }
+        })
     except Exception as exc:
-        return {
+        return _json_text({
             "error": f"SearXNG request failed: {exc}",
             "query": query,
             "result_count": 0,
             "results": [],
-        }
+        })
     
     results = []
     for item in payload.get("results", [])[:max_results]:
@@ -105,4 +109,4 @@ async def handle(params: dict, db):
         response["warning"] = "No results returned; some engines were unresponsive"
         response["unresponsive_engines"] = payload.get("unresponsive_engines", [])
     
-    return response
+    return _json_text(response)
